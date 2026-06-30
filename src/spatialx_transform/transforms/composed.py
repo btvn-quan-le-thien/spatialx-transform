@@ -9,7 +9,13 @@ class Composed(Transformation[ComposedParams[Transformation]]):
     transformation_type: TransformationType = TransformationType.COMPOSED
 
     def _point_transform(self, p: Point) -> Point:
-        raise NotImplementedError()
+        result = p
+        for t in self.params.transforms:
+            result = t._point_transform(result)
+        return result
 
     def _point_inverse(self, p: Point) -> Point:
-        raise NotImplementedError()
+        result = p
+        for t in reversed(self.params.transforms):
+            result = t._point_inverse(result)
+        return result
