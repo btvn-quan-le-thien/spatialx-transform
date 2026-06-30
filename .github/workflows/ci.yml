@@ -64,16 +64,28 @@ jobs:
     name: Build package
     runs-on: [self-hosted, linux, x64]
     steps:
+      # fetch-depth: 0 fetches full history + tags so setuptools-scm can
+      # derive the version from the latest git tag.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install uv
         uses: astral-sh/setup-uv@v4
         with:
           enable-cache: true
 
-      # Verifies the uv_build backend produces a valid sdist + wheel.
+      # Builds the sdist + wheel via the setuptools backend; the version is
+      # resolved dynamically from the git tag by setuptools-scm.
       - name: Build sdist & wheel
         run: uv build
+
+      - name: Show resolved version
+        run: |
+          wheel=$(ls dist/*.whl)
+          version=${wheel#dist/spatialx_transform-}
+          version=${version%-py3-none-any.whl}
+          echo "Resolved version: $version"
 
       - name: Upload distributions
         uses: actions/upload-artifact@v4
