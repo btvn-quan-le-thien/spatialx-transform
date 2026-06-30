@@ -1,0 +1,17 @@
+[project]
+name = "spatialx-transform"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "naot-wong", email = "toan.vong@bioturing.com" }
+]
+requires-python = ">=3.12"
+dependencies = []
+
+[project.scripts]
+spatialx-transform = "spatialx_transform:main"
+
+[build-system]
+requires = ["uv_build>=0.9.7,<0.10.0"]
+build-backend = "uv_build"
