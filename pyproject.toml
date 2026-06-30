@@ -6,8 +6,10 @@ readme = "README.md"
 authors = [
     { name = "naot-wong", email = "toan.vong@bioturing.com" }
 ]
-requires-python = ">=3.12"
-dependencies = []
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic>=2.13.4",
+]
 
 [project.scripts]
 spatialx-transform = "spatialx_transform:main"
@@ -15,3 +17,13 @@ spatialx-transform = "spatialx_transform:main"
 [build-system]
 requires = ["uv_build>=0.9.7,<0.10.0"]
 build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "deptry>=0.25.1",
+    "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
