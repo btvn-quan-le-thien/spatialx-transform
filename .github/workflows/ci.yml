@@ -31,7 +31,7 @@ concurrency:
 jobs:
   pre_commit:
     name: Run pre-commit
-    runs-on: [self-hosted, linux, x64]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
@@ -46,7 +46,7 @@ jobs:
   deptry:
     needs: pre_commit
     name: Check dependencies (deptry)
-    runs-on: [self-hosted, linux, x64]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -62,7 +62,7 @@ jobs:
   build:
     needs: pre_commit
     name: Build package
-    runs-on: [self-hosted, linux, x64]
+    runs-on: ubuntu-latest
     steps:
       # fetch-depth: 0 fetches full history + tags so setuptools-scm can
       # derive the version from the latest git tag.
@@ -97,7 +97,7 @@ jobs:
   test:
     needs: pre_commit
     name: Run tests
-    runs-on: [self-hosted, linux, x64]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
@@ -134,7 +134,7 @@ jobs:
     needs: test
     if: always()
     name: Publish test & coverage reports
-    runs-on: [self-hosted, linux, x64]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
