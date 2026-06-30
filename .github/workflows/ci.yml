@@ -1,0 +1,154 @@
+name: CI
+
+# Builds the package, runs deptry + pytest with coverage, and publishes
+# JUnit/coverage reports. Adapted from exen's build_run_test.yml, with the
+# CUDA / wheel-install / GHCR / private-PyPI steps removed (pure-Python pkg).
+on:
+  pull_request:
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/ci.yml"
+
+permissions:
+  contents: write # coverage-comment-action pushes a coverage-history branch
+  pull-requests: write # coverage-comment-action posts PR comments
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pre_commit:
+    name: Run pre-commit
+    runs-on: [self-hosted, linux, x64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: pre-commit/action@v3.0.1
+
+  deptry:
+    needs: pre_commit
+    name: Check dependencies (deptry)
+    runs-on: [self-hosted, linux, x64]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      # Scan src + tests for unused / missing / transitive dependencies.
+      - name: Run deptry
+        run: uv run --no-project --with deptry deptry src tests
+
+  build:
+    needs: pre_commit
+    name: Build package
+    runs-on: [self-hosted, linux, x64]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      # Verifies the uv_build backend produces a valid sdist + wheel.
+      - name: Build sdist & wheel
+        run: uv build
+
+      - name: Upload distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/*
+          retention-days: 14
+
+  test:
+    needs: pre_commit
+    name: Run tests
+    runs-on: [self-hosted, linux, x64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # coverage-comment-action diffs against history
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      # Install the project (editable) + the dev group (pytest, pytest-cov).
+      - name: Sync environment
+        run: uv sync --all-extras --dev
+
+      - name: Run pytest with coverage & JUnit
+        run: |
+          uv run pytest \
+            --cov=src/spatialx_transform \
+            --cov-report=xml:coverage.xml \
+            --cov-report=term-missing \
+            --junit-xml=pytest.xml
+
+      - name: Upload test & coverage reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: |
+            pytest.xml
+            coverage.xml
+          retention-days: 14
+
+  report:
+    needs: test
+    if: always()
+    name: Publish test & coverage reports
+    runs-on: [self-hosted, linux, x64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # The reports artifact may be absent if the test job crashed before
+      # producing output, so don't fail the job on a missing download —
+      # gate the report steps on what arrived.
+      - id: dl
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: test-reports
+          path: .
+
+      - name: Surface pytest failures in summary
+        if: always() && hashFiles('pytest.xml') != ''
+        uses: pmeier/pytest-results-action@v0.7.1
+        with:
+          path: pytest.xml
+          summary: true
+
+      - name: Code coverage comment
+        if: always() && hashFiles('coverage.xml') != ''
+        uses: py-cov-action/python-coverage-comment-action@v3
+        with:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MINIMUM_GREEN: 80
+          MINIMUM_ORANGE: 60
