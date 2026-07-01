@@ -84,3 +84,6 @@ $RECYCLE.BIN/
 *.log
 *.pid
 docs/_build/
+
+# -- DATA
+data/*
