@@ -87,6 +87,7 @@ docs/_build/
 
 # -- DATA
 data/*
+data_test/*
 
 # -- Generated test outputs
 tests/output.png
