@@ -87,3 +87,8 @@ docs/_build/
 
 # -- DATA
 data/*
+
+# -- Generated test outputs
+tests/output.png
+tests/warp_result.png
+tests/alignment_check.png
