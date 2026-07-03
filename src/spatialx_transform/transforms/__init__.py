@@ -5,6 +5,7 @@ from .transform import (
 )
 from .composed import Composed
 from .identity import Identity
+from .square import Square
 from .tps import TPS
 
 __all__ = [
@@ -14,4 +15,5 @@ __all__ = [
     "Affine",
     "TPS",
     "Composed",
+    "Square",
 ]

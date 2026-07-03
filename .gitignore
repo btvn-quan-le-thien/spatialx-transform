@@ -84,3 +84,11 @@ $RECYCLE.BIN/
 *.log
 *.pid
 docs/_build/
+
+# -- DATA
+data/*
+data_test/*
+
+# -- Ignore everything in tests/ except main_quan.ipynb
+tests/*
+!tests/main_quan.ipynb

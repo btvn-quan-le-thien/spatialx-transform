@@ -13,6 +13,7 @@ class TransformationType(str, Enum):
     TPS = "tps"
     COMPOSED = "composed"
     IDENTITY = "identity"
+    SQUARE = "square"
 
     @classmethod
     def has_value(cls, value: str) -> bool:
