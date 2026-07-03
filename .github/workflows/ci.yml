@@ -134,6 +134,7 @@ jobs:
           path: |
             pytest.xml
             coverage.xml
+            .coverage
           retention-days: 14
 
   report:
@@ -162,6 +163,10 @@ jobs:
         with:
           path: pytest.xml
           summary: true
+
+      - name: Install coverage
+        if: always() && hashFiles('coverage.xml') != ''
+        run: pip install coverage
 
       - name: Code coverage comment
         if: always() && hashFiles('coverage.xml') != ''
