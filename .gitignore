@@ -89,7 +89,6 @@ docs/_build/
 data/*
 data_test/*
 
-# -- Generated test outputs
-tests/output.png
-tests/warp_result.png
-tests/alignment_check.png
+# -- Ignore everything in tests/ except main_quan.ipynb
+tests/*
+!tests/main_quan.ipynb
