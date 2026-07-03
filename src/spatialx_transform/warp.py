@@ -43,7 +43,7 @@ def warp_transform(
 
     # Boundary — forward scan all border pixels
     if verbose:
-        print(f"[warp] computing forward bbox (border scan)...")
+        print("[warp] computing forward bbox (border scan)...")
     for i in [0, H_src - 1]:
         for j in range(W_src):
             fw_point = tf.transform(Point([j, i]))
@@ -67,7 +67,9 @@ def warp_transform(
     H_dst = np.int32(maxX - offsetX) + 5
     img_output = np.zeros((H_dst, W_dst, 3), dtype=np.uint8)
     if verbose:
-        print(f"[warp] output: {W_dst}x{H_dst}, offset=({math.floor(offsetX)}, {math.floor(offsetY)})")
+        print(
+            f"[warp] output: {W_dst}x{H_dst}, offset=({math.floor(offsetX)}, {math.floor(offsetY)})"
+        )
 
     # rounding offset
     offsetX = math.floor(offsetX)
@@ -83,11 +85,13 @@ def warp_transform(
 
     nx, ny = len(approximated_X), len(approximated_Y)
     if verbose:
-        print(f"[warp] grid: {nx}x{ny} = {nx * ny} points, {2 * (nx - 1) * (ny - 1)} triangles")
+        print(
+            f"[warp] grid: {nx}x{ny} = {nx * ny} points, {2 * (nx - 1) * (ny - 1)} triangles"
+        )
     trans_point = np.zeros((nx, ny), dtype=Point)
 
     if verbose:
-        print(f"[warp] forward-transforming grid points...")
+        print("[warp] forward-transforming grid points...")
     for i in range(nx):
         for j in range(ny):
             x = approximated_X[i]
@@ -100,34 +104,41 @@ def warp_transform(
     for i in range(nx - 1):
         for j in range(ny - 1):
             # top - left
-            srcTriangle.append([
-                Point([approximated_Y[j], approximated_X[i]]),
-                Point([approximated_Y[j + 1], approximated_X[i]]),
-                Point([approximated_Y[j], approximated_X[i + 1]]),
-            ])
-            dstTriangle.append([
-                trans_point[i][j],
-                trans_point[i][j + 1],
-                trans_point[i + 1][j]
-            ])
+            srcTriangle.append(
+                [
+                    Point([approximated_Y[j], approximated_X[i]]),
+                    Point([approximated_Y[j + 1], approximated_X[i]]),
+                    Point([approximated_Y[j], approximated_X[i + 1]]),
+                ]
+            )
+            dstTriangle.append(
+                [trans_point[i][j], trans_point[i][j + 1], trans_point[i + 1][j]]
+            )
             # bottom - right
-            srcTriangle.append([
-                Point([approximated_Y[j + 1], approximated_X[i + 1]]),
-                Point([approximated_Y[j + 1], approximated_X[i]]),
-                Point([approximated_Y[j], approximated_X[i + 1]]),
-            ])
-            dstTriangle.append([
-                trans_point[i + 1][j + 1],
-                trans_point[i][j + 1],
-                trans_point[i + 1][j]
-            ])
+            srcTriangle.append(
+                [
+                    Point([approximated_Y[j + 1], approximated_X[i + 1]]),
+                    Point([approximated_Y[j + 1], approximated_X[i]]),
+                    Point([approximated_Y[j], approximated_X[i + 1]]),
+                ]
+            )
+            dstTriangle.append(
+                [
+                    trans_point[i + 1][j + 1],
+                    trans_point[i][j + 1],
+                    trans_point[i + 1][j],
+                ]
+            )
 
     if verbose:
         print(f"[warp] warping {len(srcTriangle)} triangles...")
     for i in range(len(srcTriangle)):
         if verbose and i % 200 == 0 and i > 0:
             print(f"  [warp] triangle {i}/{len(srcTriangle)}")
-        dst_pts = np.array([[p.x * scale - offsetY, p.y * scale - offsetX] for p in dstTriangle[i]], dtype=np.float32)
+        dst_pts = np.array(
+            [[p.x * scale - offsetY, p.y * scale - offsetX] for p in dstTriangle[i]],
+            dtype=np.float32,
+        )
         src_pts = np.array([[p.x, p.y] for p in srcTriangle[i]], dtype=np.float32)
 
         x_src, y_src, w_src, h_src = cv.boundingRect(src_pts)
@@ -141,7 +152,7 @@ def warp_transform(
 
         M = cv.getAffineTransform(dst_local, src_local)
 
-        src_crop = img[y_src:y_src + h_src, x_src:x_src + w_src]
+        src_crop = img[y_src : y_src + h_src, x_src : x_src + w_src]
 
         warped = cv.warpAffine(
             src_crop,
@@ -164,8 +175,10 @@ def warp_transform(
         clip_dy = y0 - y_dst
         clip_dx = x0 - x_dst
         roi = img_output[y0:y1, x0:x1]
-        mask_roi = mask[clip_dy:clip_dy + (y1 - y0), clip_dx:clip_dx + (x1 - x0)]
-        warped_roi = warped[clip_dy:clip_dy + (y1 - y0), clip_dx:clip_dx + (x1 - x0)]
+        mask_roi = mask[clip_dy : clip_dy + (y1 - y0), clip_dx : clip_dx + (x1 - x0)]
+        warped_roi = warped[
+            clip_dy : clip_dy + (y1 - y0), clip_dx : clip_dx + (x1 - x0)
+        ]
         idx = mask_roi > 0
         roi[idx] = warped_roi[idx]
 

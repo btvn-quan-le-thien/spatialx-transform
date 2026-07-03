@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from enum import Enum
-from typing import Any, ClassVar, Generic, Type, TypeVar
+from typing import Any, ClassVar, Generic, Type, TypeVar, overload
 
 from pydantic import BaseModel, model_validator
 
@@ -77,10 +77,22 @@ class Transformation(BaseModel, ABC, Generic[T]):
             res.append(self._point_inverse(p))
         return res
 
+    @overload
+    def transform(self, p: Point) -> Point: ...
+
+    @overload
+    def transform(self, p: list[Point]) -> list[Point]: ...
+
     def transform(self, p: Point | list[Point]) -> Point | list[Point]:
         if isinstance(p, Point):
             return self._point_transform(p)
         return self._point_list_transform(p)
+
+    @overload
+    def inverse(self, p: Point) -> Point: ...
+
+    @overload
+    def inverse(self, p: list[Point]) -> list[Point]: ...
 
     def inverse(self, p: Point | list[Point]) -> Point | list[Point]:
         if isinstance(p, Point):
