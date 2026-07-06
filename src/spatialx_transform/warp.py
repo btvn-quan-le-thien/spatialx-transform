@@ -24,50 +24,43 @@ class PreflightTransformationResult:
 
 
 @overload
-def warp_transform_main_logic(
+def _warp_transform_impl(
     img: np.ndarray,
     tf: Transformation,
     d: tuple[int, int] = (1, 1),
     scale: tuple[float, float] = (1.0, 1.0),
-    verbose: bool = False,
     preflight: Literal[False] = ...,
 ) -> TransformationResult: ...
 
 
 @overload
-def warp_transform_main_logic(
+def _warp_transform_impl(
     img: np.ndarray,
     tf: Transformation,
     d: tuple[int, int] = (1, 1),
     scale: tuple[float, float] = (1.0, 1.0),
-    verbose: bool = False,
     preflight: Literal[True] = ...,
 ) -> PreflightTransformationResult: ...
 
 
-def warp_transform_main_logic(
+def _warp_transform_impl(
     img: np.ndarray,
     tf: Transformation,
     d: tuple[int, int] = (1, 1),
     scale: tuple[float, float] = (1.0, 1.0),
-    verbose: bool = False,
     preflight: bool = False,
 ) -> TransformationResult | PreflightTransformationResult:
     """
-    process for image with shape is [H, W]
+    process for image with shape is [C, H, W]
     """
-
-    H_src = img.shape[0]
-    W_src = img.shape[1]
-    if verbose:
-        print(f"[warp] input: {W_src}x{H_src}, dx={d[0]}, dy={d[1]}, scale={scale}")
+    num_channel = img.shape[0]
+    H_src = img.shape[1]
+    W_src = img.shape[2]
 
     offsetX, offsetY = 1e9, 1e9
     maxX, maxY = -1e9, -1e9
 
     # Boundary — forward scan all border pixels
-    if verbose:
-        print("[warp] computing forward bbox (border scan)...")
     for i in [0, H_src - 1]:
         for j in range(W_src):
             fw_point = tf.transform(Point([j, i]))
@@ -91,19 +84,16 @@ def warp_transform_main_logic(
     offsetX = math.floor(offsetX)
     offsetY = math.floor(offsetY)
 
-    W_dst = np.int32(maxY - offsetY) + 1
-    H_dst = np.int32(maxX - offsetX) + 1
+    W_dst = int(maxY - offsetY) + 1
+    H_dst = int(maxX - offsetX) + 1
 
     if preflight:
         return PreflightTransformationResult(
-            img_shape=[H_dst, W_dst], offset=(offsetX, offsetY)
+            img_shape=[num_channel, H_dst, W_dst],
+            offset=(offsetX, offsetY),
         )
 
-    img_output = np.zeros((H_dst, W_dst), dtype=np.uint8)
-    if verbose:
-        print(
-            f"[warp] output: {W_dst}x{H_dst}, offset=({math.floor(offsetX)}, {math.floor(offsetY)})"
-        )
+    img_output = np.zeros((num_channel, H_dst, W_dst), dtype=np.uint8)
 
     approximated_X = list(range(0, H_src, d[0]))
     approximated_Y = list(range(0, W_src, d[1]))
@@ -114,14 +104,8 @@ def warp_transform_main_logic(
         approximated_Y.append(W_src - 1)
 
     nx, ny = len(approximated_X), len(approximated_Y)
-    if verbose:
-        print(
-            f"[warp] grid: {nx}x{ny} = {nx * ny} points, {2 * (nx - 1) * (ny - 1)} triangles"
-        )
     trans_point = np.zeros((nx, ny), dtype=Point)
 
-    if verbose:
-        print("[warp] forward-transforming grid points...")
     for i in range(nx):
         for j in range(ny):
             x = approximated_X[i]
@@ -160,66 +144,66 @@ def warp_transform_main_logic(
                 ]
             )
 
-    if verbose:
-        print(f"[warp] warping {len(srcTriangle)} triangles...")
-    for i in range(len(srcTriangle)):
-        if verbose and i % 200 == 0 and i > 0:
-            print(f"  [warp] triangle {i}/{len(srcTriangle)}")
-        dst_pts = np.array(
-            [
-                [p.x * scale[1] - offsetY, p.y * scale[0] - offsetX]
-                for p in dstTriangle[i]
-            ],
-            dtype=np.float32,
-        )
-        src_pts = np.array([[p.x, p.y] for p in srcTriangle[i]], dtype=np.float32)
+    for channel in range(num_channel):
+        src_img = img[channel]
+        dst_img = img_output[channel]
+        for i in range(len(srcTriangle)):
+            dst_pts = np.array(
+                [
+                    [p.x * scale[1] - offsetY, p.y * scale[0] - offsetX]
+                    for p in dstTriangle[i]
+                ],
+                dtype=np.float32,
+            )
+            src_pts = np.array([[p.x, p.y] for p in srcTriangle[i]], dtype=np.float32)
 
-        x_src, y_src, w_src, h_src = cv.boundingRect(src_pts)
-        x_dst, y_dst, w_dst, h_dst = cv.boundingRect(dst_pts)
+            x_src, y_src, w_src, h_src = cv.boundingRect(src_pts)
+            x_dst, y_dst, w_dst, h_dst = cv.boundingRect(dst_pts)
 
-        if w_src == 0 or h_src == 0 or w_dst == 0 or h_dst == 0:
-            continue
+            if w_src == 0 or h_src == 0 or w_dst == 0 or h_dst == 0:
+                continue
 
-        src_local = src_pts - np.array([x_src, y_src], dtype=np.float32)
-        dst_local = dst_pts - np.array([x_dst, y_dst], dtype=np.float32)
+            src_local = src_pts - np.array([x_src, y_src], dtype=np.float32)
+            dst_local = dst_pts - np.array([x_dst, y_dst], dtype=np.float32)
 
-        M = cv.getAffineTransform(dst_local, src_local)
+            M = cv.getAffineTransform(dst_local, src_local)
 
-        src_crop = img[y_src : y_src + h_src, x_src : x_src + w_src]
+            src_crop = src_img[y_src : y_src + h_src, x_src : x_src + w_src]
 
-        warped = cv.warpAffine(
-            src_crop,
-            M,
-            (w_dst, h_dst),
-            flags=cv.INTER_NEAREST | cv.WARP_INVERSE_MAP,
-            borderMode=cv.BORDER_REFLECT101,
-        )
+            warped = cv.warpAffine(
+                src_crop,
+                M,
+                (w_dst, h_dst),
+                flags=cv.INTER_NEAREST | cv.WARP_INVERSE_MAP,
+                borderMode=cv.BORDER_REFLECT101,
+            )
 
-        mask = np.zeros((h_dst, w_dst), dtype=np.uint8)
-        cv.fillConvexPoly(mask, np.int32(dst_local), 255, cv.LINE_AA)
+            mask = np.zeros((h_dst, w_dst), dtype=np.uint8)
+            cv.fillConvexPoly(mask, np.int32(dst_local), 255, cv.LINE_AA)
 
-        # Clip destination rect to output image bounds
-        y0 = max(0, y_dst)
-        y1 = min(H_dst, y_dst + h_dst)
-        x0 = max(0, x_dst)
-        x1 = min(W_dst, x_dst + w_dst)
-        if y0 >= y1 or x0 >= x1:
-            continue
-        clip_dy = y0 - y_dst
-        clip_dx = x0 - x_dst
-        roi = img_output[y0:y1, x0:x1]
-        mask_roi = mask[clip_dy : clip_dy + (y1 - y0), clip_dx : clip_dx + (x1 - x0)]
-        warped_roi = warped[
-            clip_dy : clip_dy + (y1 - y0), clip_dx : clip_dx + (x1 - x0)
-        ]
-        idx = mask_roi > 0
-        roi[idx] = warped_roi[idx]
-
-    if verbose:
-        print(f"[warp] done: {W_dst}x{H_dst} output")
+            # Clip destination rect to output image bounds
+            y0 = max(0, y_dst)
+            y1 = min(H_dst, y_dst + h_dst)
+            x0 = max(0, x_dst)
+            x1 = min(W_dst, x_dst + w_dst)
+            if y0 >= y1 or x0 >= x1:
+                continue
+            clip_dy = y0 - y_dst
+            clip_dx = x0 - x_dst
+            roi = dst_img[y0:y1, x0:x1]
+            mask_roi = mask[
+                clip_dy : clip_dy + (y1 - y0), clip_dx : clip_dx + (x1 - x0)
+            ]
+            warped_roi = warped[
+                clip_dy : clip_dy + (y1 - y0), clip_dx : clip_dx + (x1 - x0)
+            ]
+            idx = mask_roi > 0
+            roi[idx] = warped_roi[idx]
 
     return TransformationResult(
-        img_shape=[H_dst, W_dst], img=img_output, offset=(offsetX, offsetY)
+        img_shape=list(img_output.shape),
+        img=img_output,
+        offset=(offsetX, offsetY),
     )
 
 
@@ -229,7 +213,6 @@ def warp_transform(
     tf: Transformation,
     d: tuple[int, int] = (1, 1),
     scale: tuple[float, float] = (1.0, 1.0),
-    verbose: bool = False,
     preflight: Literal[False] = ...,
 ) -> TransformationResult: ...
 
@@ -240,7 +223,6 @@ def warp_transform(
     tf: Transformation,
     d: tuple[int, int] = (1, 1),
     scale: tuple[float, float] = (1.0, 1.0),
-    verbose: bool = False,
     preflight: Literal[True] = ...,
 ) -> PreflightTransformationResult: ...
 
@@ -250,7 +232,6 @@ def warp_transform(
     tf: Transformation,
     d: tuple[int, int] = (1, 1),
     scale: tuple[float, float] = (1.0, 1.0),
-    verbose: bool = False,
     preflight: bool = False,
 ) -> TransformationResult | PreflightTransformationResult:
     """
@@ -260,41 +241,20 @@ def warp_transform(
 
     is2D = len(img.shape) == 2
     if is2D:
-        if verbose:
-            print("Starting wrapping, old shape :", img.shape)
-        img = img.reshape(1, img.shape[0], img.shape[1])  # wrap
-        if verbose:
-            print("Starting wrapping, new shape :", img.shape)
+        img = img[None, ...]
 
     if preflight:
-        result = warp_transform_main_logic(
-            img[0], tf, d, scale, verbose=verbose, preflight=True
+        preflight_result = _warp_transform_impl(
+            img=img, tf=tf, d=d, scale=scale, preflight=True
         )
         if is2D:
-            result.img_shape = [1, result.img_shape[0], result.img_shape[1]]
-        else:
-            result.img_shape = [img.shape[0], result.img_shape[0], result.img_shape[1]]
-        return result
+            preflight_result.img_shape = preflight_result.img_shape[1:]
+        return preflight_result
 
-    output = []
-
-    num_channel = img.shape[0]
-
-    for i in range(num_channel):
-        channel_output = warp_transform_main_logic(
-            img[i], tf, d, scale, verbose=verbose, preflight=False
-        )
-        output_offset = channel_output.offset
-        output.append(channel_output.img)
-
-    output = np.array(output)
+    result = _warp_transform_impl(img=img, tf=tf, d=d, scale=scale, preflight=False)
 
     if is2D:
-        output = output[0]  # unwrap
-        return TransformationResult(
-            img_shape=list(output.shape), img=output, offset=output_offset
-        )
-    else:
-        return TransformationResult(
-            img_shape=list(output.shape), img=output, offset=output_offset
-        )
+        result.img = result.img.squeeze(axis=0)
+        result.img_shape = list(result.img.shape)
+
+    return result
