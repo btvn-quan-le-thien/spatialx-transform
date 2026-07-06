@@ -27,8 +27,7 @@ class PreflightTransformationResult:
 def warp_transform_main_logic(
     img: np.ndarray,
     tf: Transformation,
-    dx: int = 1,
-    dy: int = 1,
+    d: tuple[int, int] = (1, 1),
     scale: tuple[float, float] = (1.0, 1.0),
     verbose: bool = False,
     preflight: Literal[False] = ...,
@@ -39,8 +38,7 @@ def warp_transform_main_logic(
 def warp_transform_main_logic(
     img: np.ndarray,
     tf: Transformation,
-    dx: int = 1,
-    dy: int = 1,
+    d: tuple[int, int] = (1, 1),
     scale: tuple[float, float] = (1.0, 1.0),
     verbose: bool = False,
     preflight: Literal[True] = ...,
@@ -50,8 +48,7 @@ def warp_transform_main_logic(
 def warp_transform_main_logic(
     img: np.ndarray,
     tf: Transformation,
-    dx: int = 1,
-    dy: int = 1,
+    d: tuple[int, int] = (1, 1),
     scale: tuple[float, float] = (1.0, 1.0),
     verbose: bool = False,
     preflight: bool = False,
@@ -63,7 +60,7 @@ def warp_transform_main_logic(
     H_src = img.shape[0]
     W_src = img.shape[1]
     if verbose:
-        print(f"[warp] input: {W_src}x{H_src}, dx={dx}, dy={dy}, scale={scale}")
+        print(f"[warp] input: {W_src}x{H_src}, dx={d[0]}, dy={d[1]}, scale={scale}")
 
     offsetX, offsetY = 1e9, 1e9
     maxX, maxY = -1e9, -1e9
@@ -108,8 +105,8 @@ def warp_transform_main_logic(
             f"[warp] output: {W_dst}x{H_dst}, offset=({math.floor(offsetX)}, {math.floor(offsetY)})"
         )
 
-    approximated_X = list(range(0, H_src, dx))
-    approximated_Y = list(range(0, W_src, dy))
+    approximated_X = list(range(0, H_src, d[0]))
+    approximated_Y = list(range(0, W_src, d[1]))
 
     if approximated_X[-1] != H_src - 1:
         approximated_X.append(H_src - 1)
@@ -230,8 +227,7 @@ def warp_transform_main_logic(
 def warp_transform(
     img: np.ndarray,
     tf: Transformation,
-    dx: int = 1,
-    dy: int = 1,
+    d: tuple[int, int] = (1, 1),
     scale: tuple[float, float] = (1.0, 1.0),
     verbose: bool = False,
     preflight: Literal[False] = ...,
@@ -242,8 +238,7 @@ def warp_transform(
 def warp_transform(
     img: np.ndarray,
     tf: Transformation,
-    dx: int = 1,
-    dy: int = 1,
+    d: tuple[int, int] = (1, 1),
     scale: tuple[float, float] = (1.0, 1.0),
     verbose: bool = False,
     preflight: Literal[True] = ...,
@@ -253,8 +248,7 @@ def warp_transform(
 def warp_transform(
     img: np.ndarray,
     tf: Transformation,
-    dx: int = 1,
-    dy: int = 1,
+    d: tuple[int, int] = (1, 1),
     scale: tuple[float, float] = (1.0, 1.0),
     verbose: bool = False,
     preflight: bool = False,
@@ -264,7 +258,7 @@ def warp_transform(
     """
     if preflight:
         return warp_transform_main_logic(
-            img[0], tf, dx, dy, scale, verbose=verbose, preflight=True
+            img[0], tf, d, scale, verbose=verbose, preflight=True
         )
 
     output = []
@@ -273,7 +267,7 @@ def warp_transform(
 
     for i in range(num_channel):
         channel_output = warp_transform_main_logic(
-            img[i], tf, dx, dy, scale, verbose=verbose, preflight=False
+            img[i], tf, d, scale, verbose=verbose, preflight=False
         )
         output_shape = channel_output.img_shape
         output_offset = channel_output.offset

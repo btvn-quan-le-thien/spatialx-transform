@@ -80,6 +80,9 @@ ehthumbs.db
 Desktop.ini
 $RECYCLE.BIN/
 
+# ── Test outputs ──────────────────────────────────────────
+test_output.png
+
 # ── Misc ─────────────────────────────────────────────────
 *.log
 *.pid

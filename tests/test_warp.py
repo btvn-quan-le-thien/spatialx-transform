@@ -21,7 +21,7 @@ class TestWarpTransform:
     def test_identity_transform(self):
         img = _make_test_img(20, 20)
         tf = Identity()
-        result = warp_transform(img, tf, dx=5, dy=5, scale=(1.0, 1.0))
+        result = warp_transform(img, tf, d=(5, 5), scale=(1.0, 1.0))
         assert isinstance(result, TransformationResult)
         assert result.img.shape[0] == 1
         assert result.img.shape[1] > 0
@@ -30,14 +30,14 @@ class TestWarpTransform:
     def test_identity_preserves_size(self):
         img = _make_test_img(20, 20)
         tf = Identity()
-        result = warp_transform(img, tf, dx=5, dy=5, scale=(1.0, 1.0))
+        result = warp_transform(img, tf, d=(5, 5), scale=(1.0, 1.0))
         assert result.img.shape[1] == pytest.approx(20, abs=5)
         assert result.img.shape[2] == pytest.approx(20, abs=5)
 
     def test_translation_transform(self):
         img = _make_test_img(20, 20)
         tf = Affine(params=AffineParams(A=[[1.0, 0.0], [0.0, 1.0]], b=[5.0, 5.0]))
-        result = warp_transform(img, tf, dx=5, dy=5, scale=(1.0, 1.0))
+        result = warp_transform(img, tf, d=(5, 5), scale=(1.0, 1.0))
         assert result.img.shape[1] >= 20
         assert result.img.shape[2] >= 20
         assert result.offset[0] == 5 or result.offset[1] == 5
@@ -45,14 +45,14 @@ class TestWarpTransform:
     def test_scale_transform(self):
         img = _make_test_img(20, 20)
         tf = Affine(params=AffineParams(A=[[2.0, 0.0], [0.0, 2.0]], b=[0.0, 0.0]))
-        result = warp_transform(img, tf, dx=5, dy=5, scale=(1.0, 1.0))
+        result = warp_transform(img, tf, d=(5, 5), scale=(1.0, 1.0))
         assert result.img.shape[1] > 20
         assert result.img.shape[2] > 20
 
     def test_verbose_output(self, capsys):
         img = _make_test_img(10, 10)
         tf = Identity()
-        warp_transform(img, tf, dx=3, dy=3, scale=(1.0, 1.0), verbose=True)
+        warp_transform(img, tf, d=(3, 3), scale=(1.0, 1.0), verbose=True)
         captured = capsys.readouterr()
         assert "[warp] input:" in captured.out
         assert "[warp] output:" in captured.out
@@ -62,26 +62,26 @@ class TestWarpTransform:
     def test_no_verbose(self, capsys):
         img = _make_test_img(10, 10)
         tf = Identity()
-        warp_transform(img, tf, dx=3, dy=3, scale=(1.0, 1.0), verbose=False)
+        warp_transform(img, tf, d=(3, 3), scale=(1.0, 1.0), verbose=False)
         captured = capsys.readouterr()
         assert captured.out == ""
 
     def test_returns_uint8(self):
         img = _make_test_img(10, 10)
         tf = Identity()
-        result = warp_transform(img, tf, dx=3, dy=3, scale=(1.0, 1.0))
+        result = warp_transform(img, tf, d=(3, 3), scale=(1.0, 1.0))
         assert result.img.dtype == np.uint8
 
     def test_multi_channel(self):
         img = _make_test_img(10, 10, num_channels=3)
         tf = Identity()
-        result = warp_transform(img, tf, dx=3, dy=3, scale=(1.0, 1.0))
+        result = warp_transform(img, tf, d=(3, 3), scale=(1.0, 1.0))
         assert result.img.shape[0] == 3
 
     def test_grid_step_1(self):
         img = _make_test_img(10, 10)
         tf = Identity()
-        result = warp_transform(img, tf, dx=1, dy=1, scale=(1.0, 1.0))
+        result = warp_transform(img, tf, d=(1, 1), scale=(1.0, 1.0))
         assert result.img.shape[0] > 0
 
     def test_with_composed_transform(self):
@@ -100,20 +100,20 @@ class TestWarpTransform:
                 },
             }
         )
-        result = warp_transform(img, tf, dx=3, dy=3, scale=(1.0, 1.0))
+        result = warp_transform(img, tf, d=(3, 3), scale=(1.0, 1.0))
         assert result.img.shape[1] >= 15
         assert result.img.shape[2] >= 15
 
     def test_nonzero_output(self):
         img = _make_test_img(20, 20)
         tf = Identity()
-        result = warp_transform(img, tf, dx=5, dy=5, scale=(1.0, 1.0))
+        result = warp_transform(img, tf, d=(5, 5), scale=(1.0, 1.0))
         assert np.any(result.img > 0)
 
     def test_preflight(self):
         img = _make_test_img(10, 10)
         tf = Identity()
-        result = warp_transform(img, tf, dx=3, dy=3, scale=(1.0, 1.0), preflight=True)
+        result = warp_transform(img, tf, d=(3, 3), scale=(1.0, 1.0), preflight=True)
         from spatialx_transform.warp import PreflightTransformationResult
 
         assert isinstance(result, PreflightTransformationResult)
@@ -123,5 +123,5 @@ class TestWarpTransform:
     def test_result_has_offset(self):
         img = _make_test_img(10, 10)
         tf = Identity()
-        result = warp_transform(img, tf, dx=3, dy=3, scale=(1.0, 1.0))
+        result = warp_transform(img, tf, d=(3, 3), scale=(1.0, 1.0))
         assert len(result.offset) == 2
