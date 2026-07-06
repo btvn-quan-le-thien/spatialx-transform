@@ -11,7 +11,6 @@ dependencies = [
     "numpy>=2.2.6",
     "opencv-python>=5.0.0.93",
     "pydantic>=2.13.4",
-    "ruff>=0.15.20",
 ]
 
 [project.scripts]
