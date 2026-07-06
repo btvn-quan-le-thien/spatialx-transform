@@ -125,3 +125,86 @@ class TestWarpTransform:
         tf = Identity()
         result = warp_transform(img, tf, d=(3, 3), scale=(1.0, 1.0))
         assert len(result.offset) == 2
+
+
+def _make_test_img_2d(h=20, w=20):
+    img = np.zeros((h, w), dtype=np.uint8)
+    for i in range(h):
+        for j in range(w):
+            img[i, j] = (i * 10 + j * 5) % 256
+    return img
+
+
+class TestWarpTransform2D:
+    def test_2d_input_returns_2d(self):
+        img = _make_test_img_2d(20, 20)
+        tf = Identity()
+        result = warp_transform(img, tf, d=(5, 5), scale=(1.0, 1.0))
+        assert isinstance(result, TransformationResult)
+        assert len(result.img.shape) == 2
+
+    def test_2d_input_scale_enlarges(self):
+        img = _make_test_img_2d(10, 10)
+        tf = Affine(params=AffineParams(A=[[2.0, 0.0], [0.0, 2.0]], b=[0.0, 0.0]))
+        result = warp_transform(img, tf, d=(3, 3), scale=(1.0, 1.0))
+        assert result.img.shape[0] > 10
+        assert result.img.shape[1] > 10
+
+    def test_2d_vs_3d_equivalence(self):
+        img2d = _make_test_img_2d(10, 10)
+        img3d = img2d.reshape(1, 10, 10)
+        tf = Affine(params=AffineParams(A=[[2.0, 0.0], [0.0, 2.0]], b=[0.0, 0.0]))
+        r2d = warp_transform(img2d, tf, d=(3, 3), scale=(1.0, 1.0))
+        r3d = warp_transform(img3d, tf, d=(3, 3), scale=(1.0, 1.0))
+        assert r2d.img.shape == r3d.img.shape[1:]
+        assert np.array_equal(r2d.img, r3d.img[0])
+
+    def test_2d_input_dtype(self):
+        img = _make_test_img_2d(10, 10)
+        tf = Identity()
+        result = warp_transform(img, tf, d=(3, 3), scale=(1.0, 1.0))
+        assert result.img.dtype == np.uint8
+
+    def test_2d_input_nonzero(self):
+        img = _make_test_img_2d(20, 20)
+        tf = Identity()
+        result = warp_transform(img, tf, d=(5, 5), scale=(1.0, 1.0))
+        assert np.any(result.img > 0)
+
+    def test_2d_input_offset(self):
+        img = _make_test_img_2d(10, 10)
+        tf = Identity()
+        result = warp_transform(img, tf, d=(3, 3), scale=(1.0, 1.0))
+        assert len(result.offset) == 2
+
+    def test_2d_input_preflight(self):
+        img = _make_test_img_2d(10, 10)
+        tf = Identity()
+        result = warp_transform(img, tf, d=(3, 3), scale=(1.0, 1.0), preflight=True)
+        from spatialx_transform.warp import PreflightTransformationResult
+
+        assert isinstance(result, PreflightTransformationResult)
+        assert len(result.img_shape) == 3
+        assert result.img_shape[1] > 0
+        assert result.img_shape[2] > 0
+
+    def test_2d_input_verbose(self, capsys):
+        img = _make_test_img_2d(10, 10)
+        tf = Identity()
+        warp_transform(img, tf, d=(3, 3), scale=(1.0, 1.0), verbose=True)
+        captured = capsys.readouterr()
+        assert "Starting wrapping" in captured.out
+        assert "Unwrapping" in captured.out
+
+    def test_2d_input_not_mutated(self):
+        img = _make_test_img_2d(10, 10)
+        original = img.copy()
+        tf = Affine(params=AffineParams(A=[[2.0, 0.0], [0.0, 2.0]], b=[0.0, 0.0]))
+        warp_transform(img, tf, d=(3, 3), scale=(1.0, 1.0))
+        assert np.array_equal(img, original)
+
+    def test_2d_multi_channel_error(self):
+        img = _make_test_img_2d(10, 10)
+        tf = Identity()
+        result = warp_transform(img, tf, d=(3, 3), scale=(1.0, 1.0))
+        assert len(result.img_shape) == 2

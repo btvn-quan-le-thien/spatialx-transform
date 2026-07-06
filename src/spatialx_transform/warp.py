@@ -12,14 +12,14 @@ from spatialx_transform.transforms import Transformation
 
 @dataclass
 class TransformationResult:
-    img_shape: tuple[int, int, int]
+    img_shape: list[int]
     img: np.ndarray
     offset: tuple[int, int]
 
 
 @dataclass
 class PreflightTransformationResult:
-    img_shape: tuple[int, int, int]
+    img_shape: list[int]
     offset: tuple[int, int]
 
 
@@ -96,7 +96,7 @@ def warp_transform_main_logic(
 
     if preflight:
         return PreflightTransformationResult(
-            img_shape=(-1, H_dst, W_dst), offset=(offsetX, offsetY)
+            img_shape=[H_dst, W_dst], offset=(offsetX, offsetY)
         )
 
     img_output = np.zeros((H_dst, W_dst), dtype=np.uint8)
@@ -219,7 +219,7 @@ def warp_transform_main_logic(
         print(f"[warp] done: {W_dst}x{H_dst} output")
 
     return TransformationResult(
-        img_shape=(-1, H_dst, W_dst), img=img_output, offset=(offsetX, offsetY)
+        img_shape=[H_dst, W_dst], img=img_output, offset=(offsetX, offsetY)
     )
 
 
@@ -255,11 +255,26 @@ def warp_transform(
 ) -> TransformationResult | PreflightTransformationResult:
     """
     image shape: [channel, H_src, W_src]
+    image shape: [H_src, W_src] -> [1, H_src, W_src] -> [1, H_dst, W_dst] -> [H_dst, W_dst]
     """
+
+    is2D = len(img.shape) == 2
+    if is2D:
+        if verbose:
+            print("Starting wrapping, old shape :", img.shape)
+        img = img.reshape(1, img.shape[0], img.shape[1])  # wrap
+        if verbose:
+            print("Starting wrapping, new shape :", img.shape)
+
     if preflight:
-        return warp_transform_main_logic(
+        result = warp_transform_main_logic(
             img[0], tf, d, scale, verbose=verbose, preflight=True
         )
+        if is2D:
+            result.img_shape = [1, result.img_shape[0], result.img_shape[1]]
+        else:
+            result.img_shape = [img.shape[0], result.img_shape[0], result.img_shape[1]]
+        return result
 
     output = []
 
@@ -269,12 +284,23 @@ def warp_transform(
         channel_output = warp_transform_main_logic(
             img[i], tf, d, scale, verbose=verbose, preflight=False
         )
-        output_shape = channel_output.img_shape
         output_offset = channel_output.offset
         output.append(channel_output.img)
 
-    return TransformationResult(
-        img_shape=(num_channel, output_shape[1], output_shape[2]),
-        img=np.array(output),
-        offset=output_offset,
-    )
+    output = np.array(output)
+
+    if is2D:
+        output = output[0]  # unwrap
+        if verbose:
+            print("Unwrapping, new shape :", output.shape)
+        return TransformationResult(
+            img_shape=list(output.shape),
+            img=output,
+            offset=output_offset,
+        )
+    else:
+        return TransformationResult(
+            img_shape=list(output.shape),
+            img=output,
+            offset=output_offset,
+        )
