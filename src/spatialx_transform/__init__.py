@@ -23,6 +23,8 @@ from .params import (
     ComposedParams,
     TPSParams,
 )
+
+from .warp import warp_transform_main_logic
 from .warp import warp_transform
 
 __all__ = [
@@ -41,6 +43,7 @@ __all__ = [
     "ComposedParams",
     "TPSParams",
     "warp_transform",
+    "warp_transform_main_logic",
 ]
 
 
