@@ -126,6 +126,16 @@ jobs:
             --cov-report=term-missing \
             --junit-xml=pytest.xml
 
+      # Run coverage comment here — .coverage file is already on disk,
+      # no need to upload/download it through artifacts.
+      - name: Code coverage comment
+        if: always()
+        uses: py-cov-action/python-coverage-comment-action@v3
+        with:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MINIMUM_GREEN: 80
+          MINIMUM_ORANGE: 60
+
       - name: Upload test & coverage reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -139,7 +149,7 @@ jobs:
   report:
     needs: test
     if: always()
-    name: Publish test & coverage reports
+    name: Publish test reports
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -162,14 +172,6 @@ jobs:
         with:
           path: pytest.xml
           summary: true
-
-      - name: Code coverage comment
-        if: always() && hashFiles('coverage.xml') != ''
-        uses: py-cov-action/python-coverage-comment-action@v3
-        with:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          MINIMUM_GREEN: 80
-          MINIMUM_ORANGE: 60
 
   publish:
     needs: [build, test]

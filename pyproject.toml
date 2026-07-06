@@ -40,5 +40,9 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
+[tool.coverage.run]
+relative_files = true
+source = ["src/spatialx_transform"]
+
 [tool.deptry.package_module_name_map]
 opencv-python = "cv2"
