@@ -25,8 +25,6 @@ from .params import (
 )
 
 from .warp import warp_transform
-from .warp import _warp_transform_impl
-from .log_config import setup_logging
 
 __all__ = [
     "__version__",
@@ -44,8 +42,6 @@ __all__ = [
     "ComposedParams",
     "TPSParams",
     "warp_transform",
-    "_warp_transform_impl",
-    "setup_logging",
 ]
 
 

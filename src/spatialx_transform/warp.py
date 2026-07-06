@@ -59,9 +59,7 @@ def _warp_transform_impl(
     num_channel = img.shape[0]
     H_src = img.shape[1]
     W_src = img.shape[2]
-    logger.info(
-        "input: C=%d H=%d W=%d, d=%s, scale=%s", num_channel, H_src, W_src, d, scale
-    )
+    logger.info(f"input: C={num_channel} H={H_src} W={W_src}, d={d}, scale={scale}")
 
     offsetX, offsetY = 1e9, 1e9
     maxX, maxY = -1e9, -1e9
@@ -92,9 +90,7 @@ def _warp_transform_impl(
 
     W_dst = int(maxY - offsetY) + 1
     H_dst = int(maxX - offsetX) + 1
-    logger.info(
-        "output: H_dst=%d W_dst=%d, offset=(%d, %d)", H_dst, W_dst, offsetX, offsetY
-    )
+    logger.info(f"output: H_dst={H_dst} W_dst={W_dst}, offset=({offsetX}, {offsetY})")
 
     if preflight:
         return PreflightTransformationResult(
@@ -114,11 +110,7 @@ def _warp_transform_impl(
 
     nx, ny = len(approximated_X), len(approximated_Y)
     logger.info(
-        "grid: %dx%d = %d points, %d triangles",
-        nx,
-        ny,
-        nx * ny,
-        2 * (nx - 1) * (ny - 1),
+        f"grid: {nx}x{ny} = {nx * ny} points, {2 * (nx - 1) * (ny - 1)} triangles"
     )
     trans_point = np.zeros((nx, ny), dtype=Point)
 
@@ -163,15 +155,15 @@ def _warp_transform_impl(
             )
 
     logger.info(
-        "warping %d triangles across %d channel(s)...", len(srcTriangle), num_channel
+        f"warping {len(srcTriangle)} triangles across {num_channel} channel(s)..."
     )
     for channel in range(num_channel):
         src_img = img[channel]
         dst_img = img_output[channel]
-        logger.debug("processing channel %d/%d", channel + 1, num_channel)
+        logger.debug(f"processing channel {channel + 1}/{num_channel}")
         for i in range(len(srcTriangle)):
             if i % 20000 == 0 and i > 0:
-                logger.debug("triangle %d/%d", i, len(srcTriangle))
+                logger.debug(f"triangle {i}/{len(srcTriangle)}")
             dst_pts = np.array(
                 [
                     [p.x * scale[1] - offsetY, p.y * scale[0] - offsetX]
@@ -203,7 +195,7 @@ def _warp_transform_impl(
             )
 
             mask = np.zeros((h_dst, w_dst), dtype=np.uint8)
-            cv.fillConvexPoly(mask, np.int32(dst_local), 255, cv.LINE_AA)
+            cv.fillConvexPoly(mask, dst_local.astype(np.int32), 255, cv.LINE_AA)
 
             # Clip destination rect to output image bounds
             y0 = max(0, y_dst)
@@ -224,7 +216,7 @@ def _warp_transform_impl(
             idx = mask_roi > 0
             roi[idx] = warped_roi[idx]
 
-    logger.info("done: %dx%d output", H_dst, W_dst)
+    logger.info(f"done: {H_dst}x{W_dst} output")
 
     return TransformationResult(
         img_shape=list(img_output.shape),
@@ -267,9 +259,9 @@ def warp_transform(
 
     is2D = len(img.shape) == 2
     if is2D:
-        logger.debug("wrapping 2D input, old shape: %s", img.shape)
+        logger.debug(f"wrapping 2D input, old shape: {img.shape}")
         img = img[None, ...]
-        logger.debug("wrapping 2D input, new shape: %s", img.shape)
+        logger.debug(f"wrapping 2D input, new shape: {img.shape}")
 
     if preflight:
         preflight_result = _warp_transform_impl(
@@ -284,6 +276,6 @@ def warp_transform(
     if is2D:
         result.img = result.img.squeeze(axis=0)
         result.img_shape = list(result.img.shape)
-        logger.debug("unwrapping 2D output, shape: %s", result.img.shape)
+        logger.debug(f"unwrapping 2D output, shape: {result.img.shape}")
 
     return result
