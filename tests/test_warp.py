@@ -1,5 +1,7 @@
 """Tests for warp_transform."""
 
+import logging
+
 import numpy as np
 import pytest
 
@@ -49,22 +51,23 @@ class TestWarpTransform:
         assert result.img.shape[1] > 20
         assert result.img.shape[2] > 20
 
-    def test_verbose_output(self, capsys):
+    def test_log_info(self, caplog):
+        caplog.set_level(logging.INFO, logger="spatialx_transform.warp")
         img = _make_test_img(10, 10)
         tf = Identity()
-        warp_transform(img, tf, d=(3, 3), scale=(1.0, 1.0), verbose=True)
-        captured = capsys.readouterr()
-        assert "[warp] input:" in captured.out
-        assert "[warp] output:" in captured.out
-        assert "[warp] grid:" in captured.out
-        assert "[warp] done:" in captured.out
+        warp_transform(img, tf, d=(3, 3), scale=(1.0, 1.0))
+        messages = [record.getMessage() for record in caplog.records]
+        assert any("input:" in m for m in messages)
+        assert any("output:" in m for m in messages)
+        assert any("grid:" in m for m in messages)
+        assert any("done:" in m for m in messages)
 
-    def test_no_verbose(self, capsys):
+    def test_no_log_at_warning(self, caplog):
+        caplog.set_level(logging.WARNING, logger="spatialx_transform.warp")
         img = _make_test_img(10, 10)
         tf = Identity()
-        warp_transform(img, tf, d=(3, 3), scale=(1.0, 1.0), verbose=False)
-        captured = capsys.readouterr()
-        assert captured.out == ""
+        warp_transform(img, tf, d=(3, 3), scale=(1.0, 1.0))
+        assert caplog.records == []
 
     def test_returns_uint8(self):
         img = _make_test_img(10, 10)
@@ -184,17 +187,18 @@ class TestWarpTransform2D:
         from spatialx_transform.warp import PreflightTransformationResult
 
         assert isinstance(result, PreflightTransformationResult)
-        assert len(result.img_shape) == 3
+        assert len(result.img_shape) == 2
+        assert result.img_shape[0] > 0
         assert result.img_shape[1] > 0
-        assert result.img_shape[2] > 0
 
-    def test_2d_input_verbose(self, capsys):
+    def test_2d_input_log_debug(self, caplog):
+        caplog.set_level(logging.DEBUG, logger="spatialx_transform.warp")
         img = _make_test_img_2d(10, 10)
         tf = Identity()
-        warp_transform(img, tf, d=(3, 3), scale=(1.0, 1.0), verbose=True)
-        captured = capsys.readouterr()
-        assert "Starting wrapping" in captured.out
-        assert "Unwrapping" in captured.out
+        warp_transform(img, tf, d=(3, 3), scale=(1.0, 1.0))
+        messages = [record.getMessage() for record in caplog.records]
+        assert any("wrapping" in m for m in messages)
+        assert any("unwrapping" in m for m in messages)
 
     def test_2d_input_not_mutated(self):
         img = _make_test_img_2d(10, 10)

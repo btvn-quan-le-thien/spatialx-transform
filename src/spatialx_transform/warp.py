@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import overload
 from typing import Literal
+import logging
 import math
 
 import cv2 as cv
@@ -8,6 +9,8 @@ import numpy as np
 
 from spatialx_transform.point import Point
 from spatialx_transform.transforms import Transformation
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -56,11 +59,14 @@ def _warp_transform_impl(
     num_channel = img.shape[0]
     H_src = img.shape[1]
     W_src = img.shape[2]
+    logger.info(
+        "input: C=%d H=%d W=%d, d=%s, scale=%s", num_channel, H_src, W_src, d, scale
+    )
 
     offsetX, offsetY = 1e9, 1e9
     maxX, maxY = -1e9, -1e9
 
-    # Boundary — forward scan all border pixels
+    logger.info("computing forward bbox (border scan)...")
     for i in [0, H_src - 1]:
         for j in range(W_src):
             fw_point = tf.transform(Point([j, i]))
@@ -86,6 +92,9 @@ def _warp_transform_impl(
 
     W_dst = int(maxY - offsetY) + 1
     H_dst = int(maxX - offsetX) + 1
+    logger.info(
+        "output: H_dst=%d W_dst=%d, offset=(%d, %d)", H_dst, W_dst, offsetX, offsetY
+    )
 
     if preflight:
         return PreflightTransformationResult(
@@ -104,7 +113,16 @@ def _warp_transform_impl(
         approximated_Y.append(W_src - 1)
 
     nx, ny = len(approximated_X), len(approximated_Y)
+    logger.info(
+        "grid: %dx%d = %d points, %d triangles",
+        nx,
+        ny,
+        nx * ny,
+        2 * (nx - 1) * (ny - 1),
+    )
     trans_point = np.zeros((nx, ny), dtype=Point)
+
+    logger.info("forward-transforming grid points...")
 
     for i in range(nx):
         for j in range(ny):
@@ -144,10 +162,16 @@ def _warp_transform_impl(
                 ]
             )
 
+    logger.info(
+        "warping %d triangles across %d channel(s)...", len(srcTriangle), num_channel
+    )
     for channel in range(num_channel):
         src_img = img[channel]
         dst_img = img_output[channel]
+        logger.debug("processing channel %d/%d", channel + 1, num_channel)
         for i in range(len(srcTriangle)):
+            if i % 20000 == 0 and i > 0:
+                logger.debug("triangle %d/%d", i, len(srcTriangle))
             dst_pts = np.array(
                 [
                     [p.x * scale[1] - offsetY, p.y * scale[0] - offsetX]
@@ -200,6 +224,8 @@ def _warp_transform_impl(
             idx = mask_roi > 0
             roi[idx] = warped_roi[idx]
 
+    logger.info("done: %dx%d output", H_dst, W_dst)
+
     return TransformationResult(
         img_shape=list(img_output.shape),
         img=img_output,
@@ -241,7 +267,9 @@ def warp_transform(
 
     is2D = len(img.shape) == 2
     if is2D:
+        logger.debug("wrapping 2D input, old shape: %s", img.shape)
         img = img[None, ...]
+        logger.debug("wrapping 2D input, new shape: %s", img.shape)
 
     if preflight:
         preflight_result = _warp_transform_impl(
@@ -256,5 +284,6 @@ def warp_transform(
     if is2D:
         result.img = result.img.squeeze(axis=0)
         result.img_shape = list(result.img.shape)
+        logger.debug("unwrapping 2D output, shape: %s", result.img.shape)
 
     return result
