@@ -291,16 +291,10 @@ def warp_transform(
 
     if is2D:
         output = output[0]  # unwrap
-        if verbose:
-            print("Unwrapping, new shape :", output.shape)
         return TransformationResult(
-            img_shape=list(output.shape),
-            img=output,
-            offset=output_offset,
+            img_shape=list(output.shape), img=output, offset=output_offset
         )
     else:
         return TransformationResult(
-            img_shape=list(output.shape),
-            img=output,
-            offset=output_offset,
+            img_shape=list(output.shape), img=output, offset=output_offset
         )
