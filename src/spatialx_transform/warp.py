@@ -25,44 +25,19 @@ class PreflightTransformationResult:
     img_shape: list[int]
     offset: tuple[int, int]
 
-
-@overload
-def _warp_transform_impl(
-    img: np.ndarray,
+def _compute_bbox(
+    img_shape: tuple[int, int],
     tf: Transformation,
-    d: tuple[int, int] = (1, 1),
-    scale: tuple[float, float] = (1.0, 1.0),
-    preflight: Literal[False] = ...,
-) -> TransformationResult: ...
-
-
-@overload
-def _warp_transform_impl(
-    img: np.ndarray,
-    tf: Transformation,
-    d: tuple[int, int] = (1, 1),
-    scale: tuple[float, float] = (1.0, 1.0),
-    preflight: Literal[True] = ...,
-) -> PreflightTransformationResult: ...
-
-
-def _warp_transform_impl(
-    img: np.ndarray,
-    tf: Transformation,
-    d: tuple[int, int] = (1, 1),
-    scale: tuple[float, float] = (1.0, 1.0),
-    preflight: bool = False,
-) -> TransformationResult | PreflightTransformationResult:
+    scale: tuple[float, float],
+):
     """
-    process for image with shape is [C, H, W]
+    compute bounding box
     """
-    num_channel = img.shape[0]
-    H_src = img.shape[1]
-    W_src = img.shape[2]
-    logger.info(f"input: C={num_channel} H={H_src} W={W_src}, d={d}, scale={scale}")
-
     offsetX, offsetY = 1e9, 1e9
     maxX, maxY = -1e9, -1e9
+
+    H_src = img_shape[1]
+    W_src = img_shape[2]
 
     logger.info("computing forward bbox (border scan)...")
     for i in [0, H_src - 1]:
@@ -90,23 +65,50 @@ def _warp_transform_impl(
 
     W_dst = int(maxY - offsetY) + 1
     H_dst = int(maxX - offsetX) + 1
-    logger.info(f"output: H_dst={H_dst} W_dst={W_dst}, offset=({offsetX}, {offsetY})")
+    return H_dst, W_dst, offsetX, offsetY
 
-    if preflight:
-        return PreflightTransformationResult(
-            img_shape=[num_channel, H_dst, W_dst],
-            offset=(offsetX, offsetY),
-        )
 
-    img_output = np.zeros((num_channel, H_dst, W_dst), dtype=np.uint8)
+def _build_chunk_segment(N, c_size):
+    chunk = []
+    for i in range(0, N, c_size):
+        L = i
+        R = min(N - 1, i + c_size - 1)
+        # overlapping
+        if L > 0:
+            L = L - 1
+        if R + 1 < N - 1:
+            R = R + 1
+        chunk.append((L, R))
+    return chunk
 
-    approximated_X = list(range(0, H_src, d[0]))
-    approximated_Y = list(range(0, W_src, d[1]))
 
-    if approximated_X[-1] != H_src - 1:
-        approximated_X.append(H_src - 1)
-    if approximated_Y[-1] != W_src - 1:
-        approximated_Y.append(W_src - 1)
+def _warp_transform_chunk_impl(
+    img: np.ndarray,
+    img_output: np.ndarray,
+    tf: Transformation,
+    d: tuple[int, int] = (1, 1),
+    scale: tuple[float, float] = (1.0, 1.0),
+    range_row: tuple[int, int] = (0, 0),
+    range_col: tuple[int, int] = (0, 0),
+    H_dst: int = 0,
+    W_dst: int = 0,
+    offsetX: int = 0,
+    offsetY: int = 0,
+) -> TransformationResult:
+    """
+    process for each chunk [channel, H, W] for chunk
+    """
+    num_channel = img.shape[0]
+    H_src = range_row[1] - range_row[0] + 1
+    W_src = range_col[1] - range_col[0] + 1
+
+    approximated_X = list(range(range_row[0], range_row[1], d[0]))
+    approximated_Y = list(range(range_col[0], range_col[1], d[1]))
+
+    if approximated_X[-1] != range_row[1] - 1:
+        approximated_X.append(range_row[1] - 1)
+    if approximated_Y[-1] != range_col[1] - 1:
+        approximated_Y.append(range_col[1] - 1)
 
     nx, ny = len(approximated_X), len(approximated_Y)
     logger.info(
@@ -224,12 +226,87 @@ def _warp_transform_impl(
         offset=(offsetX, offsetY),
     )
 
+@overload
+def _warp_transform_impl(
+    img: np.ndarray,
+    tf: Transformation,
+    d: tuple[int, int] = (1, 1),
+    chunk_size: tuple[int, int] = (1, 1),
+    scale: tuple[float, float] = (1.0, 1.0),
+    preflight: Literal[False] = ...,
+) -> TransformationResult: ...
+
+
+@overload
+def _warp_transform_impl(
+    img: np.ndarray,
+    tf: Transformation,
+    d: tuple[int, int] = (1, 1),
+    chunk_size: tuple[int, int] = (1, 1),
+    scale: tuple[float, float] = (1.0, 1.0),
+    preflight: Literal[True] = ...,
+) -> PreflightTransformationResult: ...
+
+def _warp_transform_impl(
+    img: np.ndarray,
+    tf: Transformation,
+    d: tuple[int, int] = (1, 1),
+    chunk_size: tuple[int, int] = (1, 1),
+    scale: tuple[float, float] = (1.0, 1.0),
+    preflight: bool = False,
+) -> TransformationResult | PreflightTransformationResult:
+    """
+    process for image with shape is [C, H, W]
+    """
+    num_channel = img.shape[0]
+    H_src = img.shape[1]
+    W_src = img.shape[2]
+    logger.info(f"input: C={num_channel} H={H_src} W={W_src}, d={d}, scale={scale}")
+
+    H_dst, W_dst, offsetX, offsetY = _compute_bbox(
+        img_shape=img.shape, tf=tf, scale=scale
+    )
+    logger.info(f"output: H_dst={H_dst} W_dst={W_dst}, offset=({offsetX}, {offsetY})")
+
+    if preflight:
+        return PreflightTransformationResult(
+            img_shape=[num_channel, H_dst, W_dst],
+            offset=(offsetX, offsetY),
+        )
+
+    img_output = np.zeros((num_channel, H_dst, W_dst), dtype=np.uint8)
+
+    chunk_X = _build_chunk_segment(N=H_src, c_size=chunk_size[0])
+    chunk_Y = _build_chunk_segment(N=W_src, c_size=chunk_size[1])
+
+    # solve for every chunk
+    for i in range(len(chunk_X)):
+        for j in range(len(chunk_Y)):
+            _warp_transform_chunk_impl(
+                img=img,
+                img_output=img_output,
+                tf=tf,
+                d=d,
+                scale=scale,
+                range_row=chunk_X[i],
+                range_col=chunk_Y[j],
+                H_dst=H_dst,
+                W_dst=W_dst,
+                offsetX=offsetX,
+                offsetY=offsetY,
+            )
+
+    return TransformationResult(
+        img_shape=list(img_output.shape), img=img_output, offset=(offsetX, offsetY)
+    )
+
 
 @overload
 def warp_transform(
     img: np.ndarray,
     tf: Transformation,
     d: tuple[int, int] = (1, 1),
+    chunk_size: tuple[int, int] = (1, 1),
     scale: tuple[float, float] = (1.0, 1.0),
     preflight: Literal[False] = ...,
 ) -> TransformationResult: ...
@@ -240,6 +317,7 @@ def warp_transform(
     img: np.ndarray,
     tf: Transformation,
     d: tuple[int, int] = (1, 1),
+    chunk_size: tuple[int, int] = (1, 1),
     scale: tuple[float, float] = (1.0, 1.0),
     preflight: Literal[True] = ...,
 ) -> PreflightTransformationResult: ...
@@ -249,6 +327,7 @@ def warp_transform(
     img: np.ndarray,
     tf: Transformation,
     d: tuple[int, int] = (1, 1),
+    chunk_size: tuple[int, int] = (1, 1),
     scale: tuple[float, float] = (1.0, 1.0),
     preflight: bool = False,
 ) -> TransformationResult | PreflightTransformationResult:
@@ -257,6 +336,7 @@ def warp_transform(
     image shape: [H_src, W_src] -> [1, H_src, W_src] -> [1, H_dst, W_dst] -> [H_dst, W_dst]
     """
 
+    # logger.info(f"Start warp transform on image with shape {}")
     is2D = len(img.shape) == 2
     if is2D:
         logger.debug(f"wrapping 2D input, old shape: {img.shape}")
@@ -265,13 +345,15 @@ def warp_transform(
 
     if preflight:
         preflight_result = _warp_transform_impl(
-            img=img, tf=tf, d=d, scale=scale, preflight=True
+            img=img, tf=tf, d=d, scale=scale, chunk_size=chunk_size, preflight=True
         )
         if is2D:
             preflight_result.img_shape = preflight_result.img_shape[1:]
         return preflight_result
 
-    result = _warp_transform_impl(img=img, tf=tf, d=d, scale=scale, preflight=False)
+    result = _warp_transform_impl(
+        img=img, tf=tf, d=d, scale=scale, chunk_size=chunk_size, preflight=False
+    )
 
     if is2D:
         result.img = result.img.squeeze(axis=0)
