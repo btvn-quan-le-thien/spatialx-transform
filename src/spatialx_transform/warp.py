@@ -32,29 +32,29 @@ class PreflightTransformationResult:
 def _compute_bbox(
     img_shape: tuple[int, int],
     tf: Transformation,
+    d: tuple[int, int],
     scale: tuple[float, float],
 ):
     """
     compute bounding box
     """
+    logger.info("computing forward bbox (approximation grid scan)...")
+
     offsetX, offsetY = 1e9, 1e9
     maxX, maxY = -1e9, -1e9
 
     H_src = img_shape[0]
     W_src = img_shape[1]
 
-    logger.info("computing forward bbox (border scan)...")
-    for i in [0, H_src - 1]:
-        for j in range(W_src):
-            fw_point = tf.transform(Point([j, i]))
-            px = fw_point.x * scale[1]
-            py = fw_point.y * scale[0]
-            offsetX = min(offsetX, py)
-            offsetY = min(offsetY, px)
-            maxX = max(maxX, py)
-            maxY = max(maxY, px)
-    for i in range(H_src):
-        for j in [0, W_src - 1]:
+    approximated_X = list(range(0, H_src, d[0]))
+    approximated_Y = list(range(0, W_src, d[1]))
+    if approximated_X[-1] != H_src - 1:
+        approximated_X.append(H_src - 1)
+    if approximated_Y[-1] != W_src - 1:
+        approximated_Y.append(W_src - 1)
+
+    for i in approximated_X:
+        for j in approximated_Y:
             fw_point = tf.transform(Point([j, i]))
             px = fw_point.x * scale[1]
             py = fw_point.y * scale[0]
@@ -229,60 +229,65 @@ def _warp_transform_chunk_impl(
 
         logger.info("-------> brute sub triangle")
         for i in range(len(srcTriangle)):
-            dst_pts = np.array(
-                [
-                    [p.x * scale[1] - offsetY, p.y * scale[0] - offsetX]
-                    for p in dstTriangle[i]
-                ],
-                dtype=np.float32,
-            )
-            src_pts = np.array([[p.x, p.y] for p in srcTriangle[i]], dtype=np.float32)
+            try:
+                dst_pts = np.array(
+                    [
+                        [p.x * scale[1] - offsetY, p.y * scale[0] - offsetX]
+                        for p in dstTriangle[i]
+                    ],
+                    dtype=np.float32,
+                )
+                src_pts = np.array(
+                    [[p.x, p.y] for p in srcTriangle[i]], dtype=np.float32
+                )
 
-            x_src, y_src, w_src, h_src = cv.boundingRect(src_pts)
-            x_dst, y_dst, w_dst, h_dst = cv.boundingRect(dst_pts)
+                x_src, y_src, w_src, h_src = cv.boundingRect(src_pts)
+                x_dst, y_dst, w_dst, h_dst = cv.boundingRect(dst_pts)
 
-            if w_src == 0 or h_src == 0 or w_dst == 0 or h_dst == 0:
-                continue
+                if w_src == 0 or h_src == 0 or w_dst == 0 or h_dst == 0:
+                    continue
 
-            src_local = src_pts - np.array([x_src, y_src], dtype=np.float32)
-            dst_local = dst_pts - np.array([x_dst, y_dst], dtype=np.float32)
+                src_local = src_pts - np.array([x_src, y_src], dtype=np.float32)
+                dst_local = dst_pts - np.array([x_dst, y_dst], dtype=np.float32)
 
-            M = cv.getAffineTransform(dst_local, src_local)
+                M = cv.getAffineTransform(dst_local, src_local)
 
-            src_crop = src_img[
-                y_src - range_row[0] : y_src - range_row[0] + h_src,
-                x_src - range_col[0] : x_src - range_col[0] + w_src,
-            ]
+                src_crop = src_img[
+                    y_src - range_row[0] : y_src - range_row[0] + h_src,
+                    x_src - range_col[0] : x_src - range_col[0] + w_src,
+                ]
 
-            warped = cv.warpAffine(
-                src_crop,
-                M,
-                (w_dst, h_dst),
-                flags=cv.INTER_NEAREST | cv.WARP_INVERSE_MAP,
-                borderMode=cv.BORDER_REFLECT101,
-            )
+                warped = cv.warpAffine(
+                    src_crop,
+                    M,
+                    (w_dst, h_dst),
+                    flags=cv.INTER_NEAREST | cv.WARP_INVERSE_MAP,
+                    borderMode=cv.BORDER_REFLECT101,
+                )
 
-            mask = np.zeros((h_dst, w_dst), dtype=np.uint8)
-            cv.fillConvexPoly(mask, dst_local.astype(np.int32), 255, cv.LINE_AA)
+                mask = np.zeros((h_dst, w_dst), dtype=np.uint8)
+                cv.fillConvexPoly(mask, dst_local.astype(np.int32), 255, cv.LINE_AA)
 
-            # Clip destination rect to output image bounds
-            y0 = max(0, y_dst)
-            y1 = min(H_dst, y_dst + h_dst)
-            x0 = max(0, x_dst)
-            x1 = min(W_dst, x_dst + w_dst)
-            if y0 >= y1 or x0 >= x1:
-                continue
-            clip_dy = y0 - y_dst
-            clip_dx = x0 - x_dst
-            roi = dst_img[y0 - minY : y1 - minY, x0 - minX : x1 - minX]
-            mask_roi = mask[
-                clip_dy : clip_dy + (y1 - y0), clip_dx : clip_dx + (x1 - x0)
-            ]
-            warped_roi = warped[
-                clip_dy : clip_dy + (y1 - y0), clip_dx : clip_dx + (x1 - x0)
-            ]
-            idx = mask_roi > 0
-            roi[idx] = warped_roi[idx]
+                # Clip destination rect to output image bounds
+                y0 = max(0, y_dst)
+                y1 = min(H_dst, y_dst + h_dst)
+                x0 = max(0, x_dst)
+                x1 = min(W_dst, x_dst + w_dst)
+                if y0 >= y1 or x0 >= x1:
+                    continue
+                clip_dy = y0 - y_dst
+                clip_dx = x0 - x_dst
+                roi = dst_img[y0 - minY : y1 - minY, x0 - minX : x1 - minX]
+                mask_roi = mask[
+                    clip_dy : clip_dy + (y1 - y0), clip_dx : clip_dx + (x1 - x0)
+                ]
+                warped_roi = warped[
+                    clip_dy : clip_dy + (y1 - y0), clip_dx : clip_dx + (x1 - x0)
+                ]
+                idx = mask_roi > 0
+                roi[idx] = warped_roi[idx]
+            except cv.error:
+                logger.debug(f"Skipping degenerate triangle {i}")
 
         logger.info("-------> store data")
         list_img_zarr_output[channel][minY:maxY, minX:maxX] = dst_img
@@ -346,7 +351,7 @@ def _warp_transform_impl(
     )
 
     H_dst, W_dst, offsetX, offsetY = _compute_bbox(
-        img_shape=(H_src, W_src), tf=tf, scale=scale
+        img_shape=(H_src, W_src), tf=tf, d=d, scale=scale
     )
     logger.info(f"output: H_dst={H_dst} W_dst={W_dst}, offset=({offsetX}, {offsetY})")
 
@@ -388,21 +393,27 @@ def _warp_transform_impl(
     logger.info("-------> WARP TRANSFORM FOR CHUNK PHASE <-------")
     for i in range(len(chunk_X)):
         for j in range(len(chunk_Y)):
-            _warp_transform_chunk_impl(
-                img_zarr=img,
-                list_img_zarr_output=list_img_zarr_output,
-                tf=tf,
-                d=d,
-                scale=scale,
-                range_row=chunk_X[i],
-                range_col=chunk_Y[j],
-                num_channel=num_channel,
-                H_dst=H_dst,
-                W_dst=W_dst,
-                offsetX=offsetX,
-                offsetY=offsetY,
-                is2D=is2D,
-            )
+            try:
+                _warp_transform_chunk_impl(
+                    img_zarr=img,
+                    list_img_zarr_output=list_img_zarr_output,
+                    tf=tf,
+                    d=d,
+                    scale=scale,
+                    range_row=chunk_X[i],
+                    range_col=chunk_Y[j],
+                    num_channel=num_channel,
+                    H_dst=H_dst,
+                    W_dst=W_dst,
+                    offsetX=offsetX,
+                    offsetY=offsetY,
+                    is2D=is2D,
+                )
+            except Exception:
+                logger.exception(
+                    f"Chunk (row={chunk_X[i]}, col={chunk_Y[j]}) failed; skipping"
+                )
+                continue
             cnt_processed_chunk = cnt_processed_chunk + 1
             logger.info(f"Done {cnt_processed_chunk} chunks / {num_chunk} chunks")
 
