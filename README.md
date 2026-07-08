@@ -19,8 +19,8 @@
 | src/spatialx\_transform/transforms/square.py        |       12 |        0 |    100% |           |
 | src/spatialx\_transform/transforms/tps.py           |       83 |       13 |     84% |47, 84, 104-118 |
 | src/spatialx\_transform/transforms/transform.py     |       58 |        2 |     97% |    62, 66 |
-| src/spatialx\_transform/warp.py                     |      124 |        3 |     98% |166, 180, 206 |
-| **TOTAL**                                           |  **462** |   **22** | **95%** |           |
+| src/spatialx\_transform/warp.py                     |      187 |        5 |     97% |101, 109, 214, 245, 274 |
+| **TOTAL**                                           |  **525** |   **24** | **95%** |           |
 
 
 ## Setup coverage badge
