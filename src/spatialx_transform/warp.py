@@ -3,6 +3,7 @@ from typing import overload
 from typing import Literal
 import logging
 import math
+import zarr
 
 import cv2 as cv
 import numpy as np
@@ -10,13 +11,15 @@ import numpy as np
 from spatialx_transform.point import Point
 from spatialx_transform.transforms import Transformation
 
+from pathlib import Path
+
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class TransformationResult:
     img_shape: list[int]
-    img: np.ndarray
+    img_zarr_list: list[zarr.Array]
     offset: tuple[int, int]
 
 
@@ -24,6 +27,7 @@ class TransformationResult:
 class PreflightTransformationResult:
     img_shape: list[int]
     offset: tuple[int, int]
+
 
 def _compute_bbox(
     img_shape: tuple[int, int],
@@ -36,8 +40,8 @@ def _compute_bbox(
     offsetX, offsetY = 1e9, 1e9
     maxX, maxY = -1e9, -1e9
 
-    H_src = img_shape[1]
-    W_src = img_shape[2]
+    H_src = img_shape[0]
+    W_src = img_shape[1]
 
     logger.info("computing forward bbox (border scan)...")
     for i in [0, H_src - 1]:
@@ -68,40 +72,84 @@ def _compute_bbox(
     return H_dst, W_dst, offsetX, offsetY
 
 
+def _compute_bbox_for_chunk_dst_img(
+    dstTriangle: list[list[Point]],
+    scale: tuple[float, float],
+    offsetX: int = 0,
+    offsetY: int = 0,
+    H_dst: int = 0,
+    W_dst: int = 0,
+):
+    """
+    compute the bounding box in the chunk output to load the output data to RAM
+    """
+    minX = 1e9
+    minY = 1e9
+    maxX = -1e9
+    maxY = -1e9
+    for i in range(len(dstTriangle)):
+        dst_pts = np.array(
+            [
+                [p.x * scale[1] - offsetY, p.y * scale[0] - offsetX]
+                for p in dstTriangle[i]
+            ],
+            dtype=np.float32,
+        )
+        x_dst, y_dst, w_dst, h_dst = cv.boundingRect(dst_pts)
+
+        if w_dst == 0 or h_dst == 0:
+            continue
+
+        # Clip destination rect to output image bounds
+        y0 = max(0, y_dst)
+        y1 = min(H_dst, y_dst + h_dst)
+        x0 = max(0, x_dst)
+        x1 = min(W_dst, x_dst + w_dst)
+        if y0 >= y1 or x0 >= x1:
+            continue
+        minX = min(minX, x0)
+        maxX = max(maxX, x1)
+        minY = min(minY, y0)
+        maxY = max(maxY, y1)
+
+    return minX, minY, maxX, maxY
+
+
 def _build_chunk_segment(N, c_size):
     chunk = []
     for i in range(0, N, c_size):
         L = i
-        R = min(N - 1, i + c_size - 1)
+        R = min(N, i + c_size)
         # overlapping
         if L > 0:
             L = L - 1
-        if R + 1 < N - 1:
+        if R + 1 < N:
             R = R + 1
         chunk.append((L, R))
     return chunk
 
 
 def _warp_transform_chunk_impl(
-    img: np.ndarray,
-    img_output: np.ndarray,
+    img_zarr: zarr.Array,
     tf: Transformation,
+    list_img_zarr_output: list[zarr.Array],
     d: tuple[int, int] = (1, 1),
     scale: tuple[float, float] = (1.0, 1.0),
     range_row: tuple[int, int] = (0, 0),
     range_col: tuple[int, int] = (0, 0),
+    num_channel: int = 0,
     H_dst: int = 0,
     W_dst: int = 0,
     offsetX: int = 0,
     offsetY: int = 0,
-) -> TransformationResult:
+    is2D: bool = False,
+):
     """
     process for each chunk [channel, H, W] for chunk
     """
-    num_channel = img.shape[0]
-    H_src = range_row[1] - range_row[0] + 1
-    W_src = range_col[1] - range_col[0] + 1
 
+    # load the chunk input
+    logger.info("-------> BUILD APRROXIMATE ARRAY AND TRANSPOINT <-------")
     approximated_X = list(range(range_row[0], range_row[1], d[0]))
     approximated_Y = list(range(range_col[0], range_col[1], d[1]))
 
@@ -111,12 +159,7 @@ def _warp_transform_chunk_impl(
         approximated_Y.append(range_col[1] - 1)
 
     nx, ny = len(approximated_X), len(approximated_Y)
-    logger.info(
-        f"grid: {nx}x{ny} = {nx * ny} points, {2 * (nx - 1) * (ny - 1)} triangles"
-    )
     trans_point = np.zeros((nx, ny), dtype=Point)
-
-    logger.info("forward-transforming grid points...")
 
     for i in range(nx):
         for j in range(ny):
@@ -124,6 +167,7 @@ def _warp_transform_chunk_impl(
             y = approximated_Y[j]
             trans_point[i, j] = tf.transform(Point([y, x]))
 
+    logger.info("-------> BUILD TRIANGLE <-------")
     srcTriangle = []
     dstTriangle = []
 
@@ -156,16 +200,35 @@ def _warp_transform_chunk_impl(
                 ]
             )
 
-    logger.info(
-        f"warping {len(srcTriangle)} triangles across {num_channel} channel(s)..."
+    logger.info("-------> COMPUTE BBOX FOR CHUNK DST IMG <-------")
+    minX, minY, maxX, maxY = _compute_bbox_for_chunk_dst_img(
+        dstTriangle=dstTriangle,
+        scale=scale,
+        offsetX=offsetX,
+        offsetY=offsetY,
+        H_dst=H_dst,
+        W_dst=W_dst,
     )
+
+    if minX > maxX or minY > maxY:
+        return
+
+    logger.info("-------> SOLVE FOR CHANNEL <-------")
     for channel in range(num_channel):
-        src_img = img[channel]
-        dst_img = img_output[channel]
-        logger.debug(f"processing channel {channel + 1}/{num_channel}")
+        logger.info(f"-------> SOLVE CHANNEL {channel}: <-------")
+        logger.info(f"-------> load src img with row = {range_row}, col = {range_col}")
+        if not is2D:
+            src_img = img_zarr[
+                channel, range_row[0] : range_row[1], range_col[0] : range_col[1]
+            ]
+        else:
+            src_img = img_zarr[range_row[0] : range_row[1], range_col[0] : range_col[1]]
+
+        logger.info("-------> load dst img")
+        dst_img = list_img_zarr_output[channel][minY:maxY, minX:maxX]
+
+        logger.info("-------> brute sub triangle")
         for i in range(len(srcTriangle)):
-            if i % 20000 == 0 and i > 0:
-                logger.debug(f"triangle {i}/{len(srcTriangle)}")
             dst_pts = np.array(
                 [
                     [p.x * scale[1] - offsetY, p.y * scale[0] - offsetX]
@@ -186,7 +249,10 @@ def _warp_transform_chunk_impl(
 
             M = cv.getAffineTransform(dst_local, src_local)
 
-            src_crop = src_img[y_src : y_src + h_src, x_src : x_src + w_src]
+            src_crop = src_img[
+                y_src - range_row[0] : y_src - range_row[0] + h_src,
+                x_src - range_col[0] : x_src - range_col[0] + w_src,
+            ]
 
             warped = cv.warpAffine(
                 src_crop,
@@ -208,7 +274,7 @@ def _warp_transform_chunk_impl(
                 continue
             clip_dy = y0 - y_dst
             clip_dx = x0 - x_dst
-            roi = dst_img[y0:y1, x0:x1]
+            roi = dst_img[y0 - minY : y1 - minY, x0 - minX : x1 - minX]
             mask_roi = mask[
                 clip_dy : clip_dy + (y1 - y0), clip_dx : clip_dx + (x1 - x0)
             ]
@@ -218,92 +284,139 @@ def _warp_transform_chunk_impl(
             idx = mask_roi > 0
             roi[idx] = warped_roi[idx]
 
-    logger.info(f"done: {H_dst}x{W_dst} output")
+        logger.info("-------> store data")
+        list_img_zarr_output[channel][minY:maxY, minX:maxX] = dst_img
 
-    return TransformationResult(
-        img_shape=list(img_output.shape),
-        img=img_output,
-        offset=(offsetX, offsetY),
-    )
 
 @overload
 def _warp_transform_impl(
-    img: np.ndarray,
+    img: zarr.Array,
+    output_dir: str,
     tf: Transformation,
     d: tuple[int, int] = (1, 1),
     chunk_size: tuple[int, int] = (1, 1),
     scale: tuple[float, float] = (1.0, 1.0),
     preflight: Literal[False] = ...,
+    is2D: bool = False,
 ) -> TransformationResult: ...
 
 
 @overload
 def _warp_transform_impl(
-    img: np.ndarray,
+    img: zarr.Array,
+    output_dir: str,
     tf: Transformation,
     d: tuple[int, int] = (1, 1),
     chunk_size: tuple[int, int] = (1, 1),
     scale: tuple[float, float] = (1.0, 1.0),
     preflight: Literal[True] = ...,
+    is2D: bool = False,
 ) -> PreflightTransformationResult: ...
 
+
 def _warp_transform_impl(
-    img: np.ndarray,
+    img: zarr.Array,
+    output_dir: str,
     tf: Transformation,
     d: tuple[int, int] = (1, 1),
     chunk_size: tuple[int, int] = (1, 1),
     scale: tuple[float, float] = (1.0, 1.0),
     preflight: bool = False,
+    is2D: bool = False,
 ) -> TransformationResult | PreflightTransformationResult:
     """
     process for image with shape is [C, H, W]
     """
-    num_channel = img.shape[0]
-    H_src = img.shape[1]
-    W_src = img.shape[2]
-    logger.info(f"input: C={num_channel} H={H_src} W={W_src}, d={d}, scale={scale}")
+    if preflight:
+        logger.info("====================== START PREFLIGHT PHASE =================")
+    else:
+        logger.info("====================== START WARP_TRANSFORM PHASE ============")
+
+    if is2D:
+        num_channel = 1
+        H_src = img.shape[0]
+        W_src = img.shape[1]
+    else:
+        num_channel = img.shape[0]
+        H_src = img.shape[1]
+        W_src = img.shape[2]
+    img_dtype = img.dtype
+    logger.info(
+        f"input: C={num_channel} H={H_src} W={W_src}, d={d}, scale={scale}, is2D = {is2D}"
+    )
 
     H_dst, W_dst, offsetX, offsetY = _compute_bbox(
-        img_shape=img.shape, tf=tf, scale=scale
+        img_shape=(H_src, W_src), tf=tf, scale=scale
     )
     logger.info(f"output: H_dst={H_dst} W_dst={W_dst}, offset=({offsetX}, {offsetY})")
 
     if preflight:
         return PreflightTransformationResult(
-            img_shape=[num_channel, H_dst, W_dst],
+            img_shape=[num_channel, H_dst, W_dst] if not is2D else [H_dst, W_dst],
             offset=(offsetX, offsetY),
         )
 
-    img_output = np.zeros((num_channel, H_dst, W_dst), dtype=np.uint8)
+    logger.info("-------> CREATE ZARR OUTPUT <-------")
+    # create zarr output
+    list_img_zarr_output = []
+    for channel in range(num_channel):
+        # spawn zarr output
+        zarr_path = (
+            str(Path(output_dir) / f"img_output_channel{channel}.zarr")
+            if not is2D
+            else str(Path(output_dir) / "img_output.zarr")
+        )
 
+        img_zarr_ch = zarr.create_array(
+            store=zarr_path,
+            shape=(H_dst, W_dst),
+            chunks=(512, 512),
+            dtype=img_dtype,
+            fill_value=0,
+            overwrite=True,
+        )
+
+        list_img_zarr_output.append(img_zarr_ch)
+
+    logger.info("-------> BUILD CHUNK SEGMENT <-------")
     chunk_X = _build_chunk_segment(N=H_src, c_size=chunk_size[0])
     chunk_Y = _build_chunk_segment(N=W_src, c_size=chunk_size[1])
 
+    num_chunk = len(chunk_X) * len(chunk_Y)
+    cnt_processed_chunk = 0
     # solve for every chunk
+    logger.info("-------> WARP TRANSFORM FOR CHUNK PHASE <-------")
     for i in range(len(chunk_X)):
         for j in range(len(chunk_Y)):
             _warp_transform_chunk_impl(
-                img=img,
-                img_output=img_output,
+                img_zarr=img,
+                list_img_zarr_output=list_img_zarr_output,
                 tf=tf,
                 d=d,
                 scale=scale,
                 range_row=chunk_X[i],
                 range_col=chunk_Y[j],
+                num_channel=num_channel,
                 H_dst=H_dst,
                 W_dst=W_dst,
                 offsetX=offsetX,
                 offsetY=offsetY,
+                is2D=is2D,
             )
+            cnt_processed_chunk = cnt_processed_chunk + 1
+            logger.info(f"Done {cnt_processed_chunk} chunks / {num_chunk} chunks")
 
     return TransformationResult(
-        img_shape=list(img_output.shape), img=img_output, offset=(offsetX, offsetY)
+        img_shape=[num_channel, H_dst, W_dst] if not is2D else [H_dst, W_dst],
+        img_zarr_list=list_img_zarr_output,
+        offset=(offsetX, offsetY),
     )
 
 
 @overload
 def warp_transform(
-    img: np.ndarray,
+    input_dir: str,
+    output_dir: str,
     tf: Transformation,
     d: tuple[int, int] = (1, 1),
     chunk_size: tuple[int, int] = (1, 1),
@@ -314,7 +427,8 @@ def warp_transform(
 
 @overload
 def warp_transform(
-    img: np.ndarray,
+    input_dir: str,
+    output_dir: str,
     tf: Transformation,
     d: tuple[int, int] = (1, 1),
     chunk_size: tuple[int, int] = (1, 1),
@@ -324,7 +438,8 @@ def warp_transform(
 
 
 def warp_transform(
-    img: np.ndarray,
+    input_dir: str,
+    output_dir: str,
     tf: Transformation,
     d: tuple[int, int] = (1, 1),
     chunk_size: tuple[int, int] = (1, 1),
@@ -336,28 +451,33 @@ def warp_transform(
     image shape: [H_src, W_src] -> [1, H_src, W_src] -> [1, H_dst, W_dst] -> [H_dst, W_dst]
     """
 
+    img = zarr.open(input_dir, mode="r")
+
     # logger.info(f"Start warp transform on image with shape {}")
     is2D = len(img.shape) == 2
-    if is2D:
-        logger.debug(f"wrapping 2D input, old shape: {img.shape}")
-        img = img[None, ...]
-        logger.debug(f"wrapping 2D input, new shape: {img.shape}")
 
     if preflight:
         preflight_result = _warp_transform_impl(
-            img=img, tf=tf, d=d, scale=scale, chunk_size=chunk_size, preflight=True
+            img=img,
+            output_dir=output_dir,
+            tf=tf,
+            d=d,
+            scale=scale,
+            chunk_size=chunk_size,
+            preflight=True,
+            is2D=is2D,
         )
-        if is2D:
-            preflight_result.img_shape = preflight_result.img_shape[1:]
         return preflight_result
 
     result = _warp_transform_impl(
-        img=img, tf=tf, d=d, scale=scale, chunk_size=chunk_size, preflight=False
+        img=img,
+        output_dir=output_dir,
+        tf=tf,
+        d=d,
+        scale=scale,
+        chunk_size=chunk_size,
+        preflight=False,
+        is2D=is2D,
     )
-
-    if is2D:
-        result.img = result.img.squeeze(axis=0)
-        result.img_shape = list(result.img.shape)
-        logger.debug(f"unwrapping 2D output, shape: {result.img.shape}")
 
     return result
