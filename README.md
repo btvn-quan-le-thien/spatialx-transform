@@ -4,8 +4,30 @@ Spatial image transformation library for aligning and warping large-scale micros
 
 ## Installation
 
+### From PyPI (uv)
+
 ```bash
 uv add spatialx-transform
+```
+
+### From git (pip)
+
+```bash
+# latest from main
+pip install git+https://github.com/btvn-quan-le-thien/spatialx-transform.git
+
+# pinned to a release tag
+pip install git+https://github.com/btvn-quan-le-thien/spatialx-transform.git@v0.3.0
+```
+
+### From a built wheel
+
+```bash
+# 1. Build the wheel
+uv build
+
+# 2. Install the wheel
+pip install dist/spatialx_transform-*.whl
 ```
 
 ## Quick Start
