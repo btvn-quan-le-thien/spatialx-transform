@@ -113,9 +113,9 @@ class TestWarpTransform3D:
             input_dir, output_dir, tf, d=(3, 3), chunk_size=(10, 10), scale=(1.0, 1.0)
         )
         messages = [record.getMessage() for record in caplog.records]
-        assert any("input:" in m for m in messages)
-        assert any("output:" in m for m in messages)
-        assert any("WARP TRANSFORM FOR CHUNK PHASE" in m for m in messages)
+        assert any("Input:" in m for m in messages)
+        assert any("Output:" in m for m in messages)
+        assert any("Warp transform: processing" in m for m in messages)
         assert any("Done" in m and "chunks" in m for m in messages)
 
     def test_no_log_at_warning(self, tmp_path, caplog):
@@ -429,7 +429,7 @@ class TestWarpTransform2D:
             input_dir, output_dir, tf, d=(3, 3), chunk_size=(10, 10), scale=(1.0, 1.0)
         )
         messages = [record.getMessage() for record in caplog.records]
-        assert any("input:" in m and "is2D = True" in m for m in messages)
+        assert any("Input:" in m and "is2D=True" in m for m in messages)
 
     def test_2d_scale_factor_enlarges_output(self, tmp_path):
         """Scale factor > 1 should enlarge 2D output."""
