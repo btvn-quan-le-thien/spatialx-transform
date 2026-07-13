@@ -4,8 +4,9 @@
 
 | Name                                                |    Stmts |     Miss |   Cover |   Missing |
 |---------------------------------------------------- | -------: | -------: | ------: | --------: |
-| src/spatialx\_transform/\_\_init\_\_.py             |       10 |        1 |     90% |        50 |
+| src/spatialx\_transform/\_\_init\_\_.py             |       11 |        1 |     91% |        68 |
 | src/spatialx\_transform/\_version.py                |       11 |        0 |    100% |           |
+| src/spatialx\_transform/exception.py                |       34 |       20 |     41% |20-21, 28-31, 38-39, 46-48, 51-57, 64-65 |
 | src/spatialx\_transform/params/\_\_init\_\_.py      |        5 |        0 |    100% |           |
 | src/spatialx\_transform/params/affine\_params.py    |       12 |        0 |    100% |           |
 | src/spatialx\_transform/params/composed\_params.py  |        7 |        0 |    100% |           |
@@ -19,8 +20,8 @@
 | src/spatialx\_transform/transforms/square.py        |       12 |        0 |    100% |           |
 | src/spatialx\_transform/transforms/tps.py           |       83 |       13 |     84% |47, 84, 104-118 |
 | src/spatialx\_transform/transforms/transform.py     |       58 |        2 |     97% |    62, 66 |
-| src/spatialx\_transform/warp.py                     |      191 |       10 |     95% |101, 109, 214, 248, 277, 289-290, 412-416 |
-| **TOTAL**                                           |  **529** |   **29** | **95%** |           |
+| src/spatialx\_transform/warp.py                     |      347 |       26 |     93% |147, 286, 294, 362, 460-464, 635, 664, 674-675, 747-749, 853-857, 956-957, 1013-1014, 1031-1035, 1111-1112 |
+| **TOTAL**                                           |  **720** |   **65** | **91%** |           |
 
 
 ## Setup coverage badge
