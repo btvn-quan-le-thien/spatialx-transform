@@ -40,6 +40,9 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "large: tests that use ~1MB images to exercise the split phase realistically",
+]
 
 [tool.coverage.run]
 relative_files = true
