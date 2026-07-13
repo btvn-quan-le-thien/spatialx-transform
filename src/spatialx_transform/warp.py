@@ -19,6 +19,8 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class TransformationResult:
+    """Result of a warp transform containing output zarr arrays and metadata."""
+
     img_shape: list[int]
     img_zarr_list: list[zarr.Array]
     offset: tuple[int, int]
@@ -26,6 +28,8 @@ class TransformationResult:
 
 @dataclass
 class PreflightTransformationResult:
+    """Result of a preflight pass containing estimated memory without producing output."""
+
     img_shape: list[int]
     offset: tuple[int, int]
     estimated_memory: float
@@ -33,6 +37,13 @@ class PreflightTransformationResult:
 
 @dataclass
 class WarpContext:
+    """Shared context for chunk processing.
+
+    Holds all parameters that remain constant across chunks (image, transform,
+    output arrays, dimensions) so they don't need to be threaded through every
+    function call individually. Only range_row and range_col vary per chunk.
+    """
+
     img_zarr: zarr.Array
     tf: Transformation
     list_img_zarr_output: list[zarr.Array]
@@ -50,6 +61,11 @@ class WarpContext:
 
 
 def _build_grid_point(L: int, R: int, step: int) -> list[int]:
+    """Build grid sample points from L (inclusive) to R (exclusive).
+
+    Ensures the last index R-1 is always included, even if the step
+    doesn't land on it.
+    """
     a = list(range(L, R, step))
     if a[-1] != R - 1:
         a.append(R - 1)
@@ -61,6 +77,12 @@ def _build_chunk_segment(
     R_range: int = 0,
     c_size: int = 0,
 ) -> list[tuple[int, int]]:
+    """Split [L_range, R_range) into overlapping segments of size c_size.
+
+    Each segment overlaps its neighbor by 1 pixel on each side (except
+    at the boundaries of the full range) to ensure triangle meshes at
+    chunk edges have complete source data.
+    """
     chunk = []
     for i in range(L_range, R_range, c_size):
         L = i
@@ -87,8 +109,11 @@ def _compute_bbox(
     d: tuple[int, int],
     scale: tuple[float, float],
 ):
-    """
-    compute bounding box
+    """Compute the global destination bounding box via grid scan.
+
+    Transforms a sampled grid of source points through the transform,
+    scales the results, and returns the tightest integer bounding box
+    as (H_dst, W_dst, offsetX, offsetY).
     """
     logger.info(
         f"Computing global destination bounding box via grid scan (d={d}, scale={scale})..."
@@ -130,8 +155,11 @@ def _compute_bbox_for_chunk_dst_img(
     H_dst: int = 0,
     W_dst: int = 0,
 ):
-    """
-    compute the bounding box in the chunk output to load the output data to RAM
+    """Compute the output bounding box for a chunk's destination triangles.
+
+    Returns (minX, minY, maxX, maxY) — the tightest rectangle in output
+    coordinates that covers all in-bounds destination triangles, clipped
+    to the output image bounds.
     """
     minX = 1e9
     minY = 1e9
@@ -170,8 +198,11 @@ def _warp_estimated_RAM(
     range_row: tuple[int, int] = (0, 0),
     range_col: tuple[int, int] = (0, 0),
 ) -> tuple[float, float]:
-    """
-    estimate RAM for chunk
+    """Estimate peak RAM usage for processing a single chunk.
+
+    Returns (total_gb, dst_img_gb) where total_gb includes all memory
+    components (trans_points, triangles, src_img, dst_img, temp buffers)
+    and dst_img_gb is the output image buffer portion alone.
     """
     POINT_SIZE = 850
     LIST_OVERHEAD = 56
@@ -268,12 +299,11 @@ def _split_chunk_to_transform(
     estimated_gb: float,
     buffer_size_dst: float,
 ) -> float:
-    """
-    estimated > memory_limit. K = estimated / memory_limit
-    H_src = range_row[1] - range_col[0]
-    W_src = range_row[1] - range_col[0]
-    (H_src, W_src) -> (H_src / a, W_src / b) ; a * b = K
-    a = b = sqrt(K)
+    """Split a chunk into sub-chunks and process each recursively.
+
+    Computes K = estimated / limit (or dst_img / output_buffer) and splits
+    the chunk into approximately sqrt(K) x sqrt(K) segments, then calls
+    _warp_transform_chunk_impl on each sub-chunk.
     """
     logger.info(
         f"Splitting chunk range_row={range_row}, range_col={range_col}: estimated={estimated_gb:.3f}GB, limit={ctx.memory_limit_gb}GB, dst_img={buffer_size_dst:.3f}GB, output_buffer={ctx.output_buffer_size_gb}"
@@ -317,6 +347,11 @@ def _check_memory_and_split(
     range_row: tuple[int, int],
     range_col: tuple[int, int],
 ) -> tuple[float, bool]:
+    """Estimate RAM for a chunk and split it if it exceeds the memory limit.
+
+    Returns (estimated_gb, needs_split). If splitting occurred, estimated_gb
+    is the max from the sub-chunks; otherwise it's this chunk's estimate.
+    """
     estimated_gb, dst_img_gb = _warp_estimated_RAM(ctx, range_row, range_col)
 
     logger.info(
@@ -344,6 +379,12 @@ def _check_memory_and_split(
 def _build_triangle_mesh(
     ctx: WarpContext, range_row: tuple[int, int], range_col: tuple[int, int]
 ) -> tuple[list[tuple[Point, Point, Point]], list[tuple[Point, Point, Point]]]:
+    """Build source and destination triangle meshes from a grid.
+
+    Transforms each grid point through the transform to get destination
+    coordinates, then constructs two triangles per grid cell (top-left
+    and bottom-right) for both source and destination.
+    """
     approximated_X = _build_grid_point(range_row[0], range_row[1], ctx.d[0])
     approximated_Y = _build_grid_point(range_col[0], range_col[1], ctx.d[1])
 
@@ -405,6 +446,12 @@ def _warp_single_triangle(
     minX: int,
     minY: int,
 ) -> None:
+    """Warp a single triangle from src_img into dst_img.
+
+    Computes the affine transform from destination to source, warps the
+    source crop, fills the destination polygon via a mask, and clips to
+    output image bounds. Silently skips degenerate triangles.
+    """
     try:
         dst_pts = np.array(
             [
@@ -473,6 +520,12 @@ def _warp_channels(
     maxX: int,
     maxY: int,
 ) -> None:
+    """Process all channels for a chunk: load src/dst, warp triangles, store.
+
+    For each channel, loads the source and destination image regions,
+    warps all triangles, writes the result back to the output zarr, and
+    frees memory before moving to the next channel.
+    """
     num_channel = ctx.num_channel
     logger.info(
         f"Processing {num_channel} channels for chunk range_row={range_row}, range_col={range_col}"
@@ -521,8 +574,11 @@ def _warp_transform_chunk_impl(
     range_row: tuple[int, int] = (0, 0),
     range_col: tuple[int, int] = (0, 0),
 ) -> float:
-    """
-    process for each chunk [channel, H, W] for chunk
+    """Process a single chunk: estimate RAM, optionally split, then warp.
+
+    If the chunk exceeds the memory limit or output buffer size, it is
+    recursively split into smaller sub-chunks. In preflight mode, only
+    the RAM estimate is returned without performing the actual warp.
     """
     estimated_gb, needs_split = _check_memory_and_split(ctx, range_row, range_col)
     if ctx.preflight or needs_split:
@@ -563,6 +619,11 @@ def _warp_transform_chunk_impl(
 def _warp_preflight(
     ctx: WarpContext, chunk_size: tuple[int, int]
 ) -> PreflightTransformationResult:
+    """Run preflight estimation across all chunks without producing output.
+
+    Iterates over all chunk segments, calls _warp_transform_chunk_impl in
+    preflight mode, and returns the maximum estimated RAM across all chunks.
+    """
     num_channel = ctx.num_channel
     if ctx.is2D:
         H_src = ctx.img_zarr.shape[0]
@@ -645,7 +706,11 @@ def _warp_transform_impl(
     output_buffer_size_gb: float | None = None,
 ) -> TransformationResult | PreflightTransformationResult:
     """
-    process for image with shape is [C, H, W]
+    Process an entire image: compute bbox, create outputs, warp all chunks.
+
+    In preflight mode, estimates RAM without creating output files.
+    In normal mode, creates output zarr arrays, iterates over all chunk
+    segments, and warps each chunk into the output.
     """
     if preflight:
         logger.info("========== START PREFLIGHT PHASE ==========")
@@ -782,9 +847,11 @@ def warp_transform(
     preflight: bool = False,
     output_buffer_size_gb: float | None = None,
 ) -> TransformationResult | PreflightTransformationResult:
-    """
-    image shape: [channel, H_src, W_src]
-    image shape: [H_src, W_src] -> [1, H_src, W_src] -> [1, H_dst, W_dst] -> [H_dst, W_dst]
+    """Warp a zarr image from input_dir to output_dir using the given transform.
+
+    Wraps _warp_transform_impl, opening the input zarr and detecting 2D vs
+    3D automatically. In preflight mode, returns estimated memory without
+    producing output files.
     """
 
     img = zarr.open(input_dir, mode="r")
