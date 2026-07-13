@@ -130,6 +130,132 @@ def _make_warp_context(
 
 
 # ---------------------------------------------------------------------------
+# Medium image helpers (~1MB) — exercises the split phase with realistic sizes
+# ---------------------------------------------------------------------------
+
+_LARGE_H = 1100  # 1100*1100*1 byte ≈ 1.15 MiB (uint8, single channel)
+_LARGE_W = 1100
+_LARGE_3D_H = 1100  # 1100*1100*3*1 byte ≈ 3.46 MiB (uint8, 3 channels)
+_LARGE_3D_W = 1100
+_LARGE_U16_H = 1100  # 1100*1100*2 bytes ≈ 2.3 MiB (uint16, single channel)
+_LARGE_U16_W = 1100
+
+
+def _make_large_zarr_img(
+    tmp_path,
+    h,
+    w,
+    num_channels=1,
+    dtype=np.uint8,
+    name="input.sarr",
+    is2d=True,
+):
+    """Create a large zarr image (>=50MB) on disk, writing chunk by chunk.
+
+    Writes 512x512 chunks one at a time to avoid holding the entire array in
+    memory, mimicking how production data is stored.
+    """
+    zarr_path = str(tmp_path / name)
+    if is2d:
+        shape = (h, w)
+        chunks = (512, 512)
+    else:
+        shape = (num_channels, h, w)
+        chunks = (1, 512, 512)
+    z = zarr.create_array(
+        store=zarr_path,
+        shape=shape,
+        chunks=chunks,
+        dtype=dtype,
+        fill_value=0,
+        overwrite=True,
+    )
+    cs = 512
+    max_val = np.iinfo(dtype).max + 1
+    if is2d:
+        for i in range(0, h, cs):
+            i_end = min(i + cs, h)
+            for j in range(0, w, cs):
+                j_end = min(j + cs, w)
+                ii = np.arange(i, i_end, dtype=np.int32)
+                jj = np.arange(j, j_end, dtype=np.int32)
+                z[i:i_end, j:j_end] = (
+                    (ii[:, None] * 10 + jj[None, :] * 5) % max_val
+                ).astype(dtype)
+    else:
+        for c in range(num_channels):
+            for i in range(0, h, cs):
+                i_end = min(i + cs, h)
+                for j in range(0, w, cs):
+                    j_end = min(j + cs, w)
+                    ii = np.arange(i, i_end, dtype=np.int32)
+                    jj = np.arange(j, j_end, dtype=np.int32)
+                    z[c, i:i_end, j:j_end] = (
+                        (ii[:, None] * 10 + jj[None, :] * 5 + c * 30) % max_val
+                    ).astype(dtype)
+    return zarr_path
+
+
+def _large_img_size_mib(h, w, num_channels=1, dtype=np.uint8):
+    """Compute image size in MiB (binary)."""
+    return h * w * num_channels * np.dtype(dtype).itemsize / (1024 * 1024)
+
+
+def _make_large_warp_context(
+    tmp_path,
+    h,
+    w,
+    num_channels=1,
+    dtype=np.uint8,
+    tf=None,
+    d=(200, 200),
+    scale=(1.0, 1.0),
+    preflight=False,
+    memory_limit_gb=2,
+    output_buffer_size_gb=None,
+    list_img_zarr_output=None,
+    is2d=True,
+    name="input.sarr",
+):
+    """Build a WarpContext backed by a large on-disk zarr image."""
+    if tf is None:
+        tf = Identity()
+    input_dir = _make_large_zarr_img(
+        tmp_path, h, w, num_channels=num_channels, dtype=dtype, name=name, is2d=is2d
+    )
+    img_zarr = zarr.open(input_dir, mode="r")
+    if is2d:
+        nc = 1
+        H_src = img_zarr.shape[0]
+        W_src = img_zarr.shape[1]
+    else:
+        nc = img_zarr.shape[0]
+        H_src = img_zarr.shape[1]
+        W_src = img_zarr.shape[2]
+    H_dst, W_dst, offsetX, offsetY = _compute_bbox(
+        img_shape=(H_src, W_src), tf=tf, d=d, scale=scale
+    )
+    if list_img_zarr_output is None:
+        list_img_zarr_output = []
+    return WarpContext(
+        img_zarr=img_zarr,
+        tf=tf,
+        list_img_zarr_output=list_img_zarr_output,
+        d=d,
+        scale=scale,
+        H_dst=H_dst,
+        W_dst=W_dst,
+        offsetX=offsetX,
+        offsetY=offsetY,
+        is2D=is2d,
+        num_channel=nc,
+        preflight=preflight,
+        memory_limit_gb=memory_limit_gb,
+        output_buffer_size_gb=output_buffer_size_gb,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Unit tests for internal helpers
 # ---------------------------------------------------------------------------
 
@@ -312,15 +438,15 @@ class TestCheckMemoryAndSplit:
         assert needs_split is False
 
     def test_split_over_output_buffer(self, tmp_path):
-        img = _make_test_img(600, 600)
+        img = _make_test_img(1100, 1100)
         ctx = _make_warp_context(
             tmp_path,
             img,
-            d=(50, 50),
-            output_buffer_size_gb=0.0005,
+            d=(200, 200),
+            output_buffer_size_gb=0.002,
             preflight=True,
         )
-        estimated_gb, needs_split = _check_memory_and_split(ctx, (0, 600), (0, 600))
+        estimated_gb, needs_split = _check_memory_and_split(ctx, (0, 1100), (0, 1100))
         assert needs_split is True
 
 
@@ -378,7 +504,7 @@ class TestOutputBufferSize:
         assert np.any(_read_zarr_output(result)[0] > 0)
 
     def test_output_buffer_size_triggers_split(self, tmp_path):
-        img = _make_test_img(600, 600)
+        img = _make_test_img(1100, 1100)
         input_dir = _write_zarr_input(tmp_path, img)
         output_dir = str(tmp_path / "output")
         tf = Identity()
@@ -386,10 +512,10 @@ class TestOutputBufferSize:
             input_dir,
             output_dir,
             tf,
-            d=(50, 50),
-            chunk_size=(600, 600),
+            d=(200, 200),
+            chunk_size=(1100, 1100),
             scale=(1.0, 1.0),
-            output_buffer_size_gb=0.0005,
+            output_buffer_size_gb=0.002,
         )
         assert isinstance(result, TransformationResult)
         out = _read_zarr_output(result)
@@ -460,7 +586,7 @@ class TestMemoryLimitSplitting:
         assert np.any(out > 0)
 
     def test_split_output_matches_non_split(self, tmp_path):
-        img = _make_test_img(600, 600)
+        img = _make_test_img(1100, 1100)
         input_dir = _write_zarr_input(tmp_path, img)
         tf = Identity()
 
@@ -468,18 +594,18 @@ class TestMemoryLimitSplitting:
             input_dir,
             str(tmp_path / "output_normal"),
             tf,
-            d=(50, 50),
-            chunk_size=(600, 600),
+            d=(200, 200),
+            chunk_size=(1100, 1100),
             scale=(1.0, 1.0),
         )
         result_split = warp_transform(
             input_dir,
             str(tmp_path / "output_split"),
             tf,
-            d=(50, 50),
-            chunk_size=(600, 600),
+            d=(200, 200),
+            chunk_size=(1100, 1100),
             scale=(1.0, 1.0),
-            output_buffer_size_gb=0.0005,
+            output_buffer_size_gb=0.002,
         )
         out_normal = _read_zarr_output(result_normal)
         out_split = _read_zarr_output(result_split)
@@ -488,7 +614,7 @@ class TestMemoryLimitSplitting:
 
     def test_split_log_messages(self, tmp_path, caplog):
         caplog.set_level(logging.INFO, logger="spatialx_transform.warp")
-        img = _make_test_img(600, 600)
+        img = _make_test_img(1100, 1100)
         input_dir = _write_zarr_input(tmp_path, img)
         output_dir = str(tmp_path / "output")
         tf = Identity()
@@ -496,10 +622,10 @@ class TestMemoryLimitSplitting:
             input_dir,
             output_dir,
             tf,
-            d=(50, 50),
-            chunk_size=(600, 600),
+            d=(200, 200),
+            chunk_size=(1100, 1100),
             scale=(1.0, 1.0),
-            output_buffer_size_gb=0.0005,
+            output_buffer_size_gb=0.002,
         )
         messages = [record.getMessage() for record in caplog.records]
         assert any("Splitting chunk" in m for m in messages)
@@ -1169,3 +1295,427 @@ class TestWarpTransform2D:
         )
         assert isinstance(result, PreflightTransformationResult)
         assert result.estimated_memory > 0
+
+
+# ---------------------------------------------------------------------------
+# Large image tests (~1MB) — exercises the split phase with realistic sizes
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.large
+class TestLargeImageSplitting:
+    """Tests using ~1MB images to exercise the split phase realistically.
+
+    The small unit tests above verify logic but cannot exercise the recursive
+    split path with realistic data sizes.  These tests create ~1MB images on
+    disk and verify that splitting produces correct output, triggers when
+    expected, and estimates memory accurately.
+
+    Note on output_buffer_size_gb thresholds:
+      Output zarr chunks are 512x512.  A sub-chunk straddling a 512 boundary
+      aligns to 1024 in that dimension.  The maximum sub-chunk aligned size is
+      1024x1024 = 1,048,576 bytes (uint8) or 2,097,152 bytes (uint16).
+      output_buffer_size_gb must exceed these values to avoid infinite
+      recursion, but stay below the full-image aligned size to trigger
+      splitting.  For 1100x1100 images:
+        uint8:  full=2,359,296  sub-chunk-max=1,048,576  -> use 0.002
+        uint16: full=4,718,592  sub-chunk-max=2,097,152  -> use 0.003
+    """
+
+    # -- sanity: images are large enough -------------------------------
+
+    def test_large_image_size_at_least_1mb(self):
+        assert _large_img_size_mib(_LARGE_H, _LARGE_W) >= 1.0
+        assert _large_img_size_mib(_LARGE_3D_H, _LARGE_3D_W, num_channels=3) >= 1.0
+        assert _large_img_size_mib(_LARGE_U16_H, _LARGE_U16_W, dtype=np.uint16) >= 1.0
+
+    # -- split vs non-split correctness (3D) ----------------------------
+
+    def test_large_split_vs_no_split_correctness(self, tmp_path):
+        """Split output must match non-split output for 3D images."""
+        input_dir = _make_large_zarr_img(tmp_path, _LARGE_H, _LARGE_W, is2d=False)
+        tf = Identity()
+        d = (200, 200)
+        chunk_size = (1100, 1100)
+
+        result_normal = warp_transform(
+            input_dir,
+            str(tmp_path / "output_normal"),
+            tf,
+            d=d,
+            chunk_size=chunk_size,
+            scale=(1.0, 1.0),
+        )
+        result_split = warp_transform(
+            input_dir,
+            str(tmp_path / "output_split"),
+            tf,
+            d=d,
+            chunk_size=chunk_size,
+            scale=(1.0, 1.0),
+            output_buffer_size_gb=0.002,
+        )
+        out_normal = np.asarray(result_normal.img_zarr_list[0][:])
+        out_split = np.asarray(result_split.img_zarr_list[0][:])
+        assert out_normal.shape == out_split.shape
+        assert np.array_equal(out_normal, out_split)
+
+    # -- split vs non-split correctness (2D) ----------------------------
+
+    def test_large_2d_split_vs_no_split_correctness(self, tmp_path):
+        """Split output must match non-split output for 2D images."""
+        input_dir = _make_large_zarr_img(tmp_path, _LARGE_H, _LARGE_W)
+        tf = Identity()
+        d = (200, 200)
+        chunk_size = (1100, 1100)
+
+        result_normal = warp_transform(
+            input_dir,
+            str(tmp_path / "output_normal"),
+            tf,
+            d=d,
+            chunk_size=chunk_size,
+            scale=(1.0, 1.0),
+        )
+        result_split = warp_transform(
+            input_dir,
+            str(tmp_path / "output_split"),
+            tf,
+            d=d,
+            chunk_size=chunk_size,
+            scale=(1.0, 1.0),
+            output_buffer_size_gb=0.002,
+        )
+        out_normal = np.asarray(result_normal.img_zarr_list[0][:])
+        out_split = np.asarray(result_split.img_zarr_list[0][:])
+        assert out_normal.shape == out_split.shape
+        assert np.array_equal(out_normal, out_split)
+
+    # -- split triggers (logs) -----------------------------------------
+
+    def test_large_split_triggers_with_small_buffer(self, tmp_path, caplog):
+        """Splitting must occur when output buffer is small for large images."""
+        caplog.set_level(logging.INFO, logger="spatialx_transform.warp")
+        input_dir = _make_large_zarr_img(tmp_path, _LARGE_H, _LARGE_W)
+        tf = Identity()
+        warp_transform(
+            input_dir,
+            str(tmp_path / "output"),
+            tf,
+            d=(200, 200),
+            chunk_size=(1100, 1100),
+            scale=(1.0, 1.0),
+            output_buffer_size_gb=0.002,
+        )
+        messages = [record.getMessage() for record in caplog.records]
+        assert any("Splitting chunk" in m for m in messages)
+
+    # -- _check_memory_and_split with large images ---------------------
+
+    def test_large_check_memory_and_split_triggers(self, tmp_path):
+        """_check_memory_and_split should detect that a large image needs splitting."""
+        ctx = _make_large_warp_context(
+            tmp_path,
+            _LARGE_H,
+            _LARGE_W,
+            d=(200, 200),
+            output_buffer_size_gb=0.002,
+            preflight=True,
+        )
+        estimated_gb, needs_split = _check_memory_and_split(
+            ctx, (0, _LARGE_H), (0, _LARGE_W)
+        )
+        assert needs_split is True
+        assert estimated_gb > 0
+
+    def test_large_check_memory_no_split_large_buffer(self, tmp_path):
+        """_check_memory_and_split should not split when buffer is large enough."""
+        ctx = _make_large_warp_context(
+            tmp_path,
+            _LARGE_H,
+            _LARGE_W,
+            d=(200, 200),
+            output_buffer_size_gb=1.0,
+            preflight=True,
+        )
+        estimated_gb, needs_split = _check_memory_and_split(
+            ctx, (0, _LARGE_H), (0, _LARGE_W)
+        )
+        assert needs_split is False
+        assert estimated_gb > 0
+
+    # -- _warp_estimated_RAM with large images -------------------------
+
+    def test_large_memory_estimation_positive(self, tmp_path):
+        """Memory estimation for a large image should be positive."""
+        ctx = _make_large_warp_context(
+            tmp_path,
+            _LARGE_H,
+            _LARGE_W,
+            d=(200, 200),
+            preflight=True,
+        )
+        total_gb, dst_img_gb = _warp_estimated_RAM(ctx, (0, _LARGE_H), (0, _LARGE_W))
+        assert total_gb > 0
+        assert dst_img_gb > 0
+
+    def test_large_estimated_ram_total_gt_dst(self, tmp_path):
+        """Total estimated RAM should be >= dst_img portion for large images."""
+        ctx = _make_large_warp_context(
+            tmp_path,
+            _LARGE_H,
+            _LARGE_W,
+            d=(200, 200),
+            preflight=True,
+        )
+        total_gb, dst_img_gb = _warp_estimated_RAM(ctx, (0, _LARGE_H), (0, _LARGE_W))
+        assert total_gb >= dst_img_gb
+
+    def test_large_estimated_ram_grows_with_range(self, tmp_path):
+        """Larger chunk ranges should produce larger memory estimates."""
+        ctx = _make_large_warp_context(
+            tmp_path,
+            _LARGE_H,
+            _LARGE_W,
+            d=(200, 200),
+            preflight=True,
+        )
+        total_full, _ = _warp_estimated_RAM(ctx, (0, _LARGE_H), (0, _LARGE_W))
+        total_half, _ = _warp_estimated_RAM(ctx, (0, _LARGE_H // 2), (0, _LARGE_W // 2))
+        assert total_full > total_half
+
+    # -- preflight with large images -----------------------------------
+
+    def test_large_preflight_positive(self, tmp_path):
+        """Preflight should return a positive memory estimate for large images."""
+        input_dir = _make_large_zarr_img(tmp_path, _LARGE_H, _LARGE_W)
+        tf = Identity()
+        result = warp_transform(
+            input_dir,
+            str(tmp_path / "output"),
+            tf,
+            d=(200, 200),
+            chunk_size=(1100, 1100),
+            scale=(1.0, 1.0),
+            preflight=True,
+        )
+        assert isinstance(result, PreflightTransformationResult)
+        assert result.estimated_memory > 0
+        assert len(result.img_shape) == 2
+        assert result.img_shape[0] > 0
+        assert result.img_shape[1] > 0
+
+    # -- multi-channel large image with splitting ----------------------
+
+    def test_large_multi_channel_split_correctness(self, tmp_path):
+        """Split output must match non-split for multi-channel images."""
+        input_dir = _make_large_zarr_img(
+            tmp_path,
+            _LARGE_3D_H,
+            _LARGE_3D_W,
+            num_channels=3,
+            is2d=False,
+        )
+        tf = Identity()
+        d = (200, 200)
+        chunk_size = (1100, 1100)
+
+        result_normal = warp_transform(
+            input_dir,
+            str(tmp_path / "output_normal"),
+            tf,
+            d=d,
+            chunk_size=chunk_size,
+            scale=(1.0, 1.0),
+        )
+        result_split = warp_transform(
+            input_dir,
+            str(tmp_path / "output_split"),
+            tf,
+            d=d,
+            chunk_size=chunk_size,
+            scale=(1.0, 1.0),
+            output_buffer_size_gb=0.002,
+        )
+        assert len(result_normal.img_zarr_list) == 3
+        assert len(result_split.img_zarr_list) == 3
+        for ch in range(3):
+            out_normal = np.asarray(result_normal.img_zarr_list[ch][:])
+            out_split = np.asarray(result_split.img_zarr_list[ch][:])
+            assert out_normal.shape == out_split.shape
+            assert np.array_equal(out_normal, out_split)
+
+    # -- affine transform with splitting --------------------------------
+
+    def test_large_affine_with_split(self, tmp_path):
+        """Split output must match non-split for affine transform on large images."""
+        input_dir = _make_large_zarr_img(tmp_path, _LARGE_H, _LARGE_W)
+        tf = Affine(params=AffineParams(A=[[1.0, 0.0], [0.0, 1.0]], b=[50.0, 50.0]))
+        d = (200, 200)
+        chunk_size = (1100, 1100)
+
+        result_normal = warp_transform(
+            input_dir,
+            str(tmp_path / "output_normal"),
+            tf,
+            d=d,
+            chunk_size=chunk_size,
+            scale=(1.0, 1.0),
+        )
+        result_split = warp_transform(
+            input_dir,
+            str(tmp_path / "output_split"),
+            tf,
+            d=d,
+            chunk_size=chunk_size,
+            scale=(1.0, 1.0),
+            output_buffer_size_gb=0.002,
+        )
+        out_normal = np.asarray(result_normal.img_zarr_list[0][:])
+        out_split = np.asarray(result_split.img_zarr_list[0][:])
+        assert out_normal.shape == out_split.shape
+        assert np.array_equal(out_normal, out_split)
+
+    # -- output non-zero ------------------------------------------------
+
+    def test_large_output_nonzero(self, tmp_path):
+        """Output should contain non-zero data for large images."""
+        input_dir = _make_large_zarr_img(tmp_path, _LARGE_H, _LARGE_W)
+        tf = Identity()
+        result = warp_transform(
+            input_dir,
+            str(tmp_path / "output"),
+            tf,
+            d=(200, 200),
+            chunk_size=(1100, 1100),
+            scale=(1.0, 1.0),
+            output_buffer_size_gb=0.002,
+        )
+        out = np.asarray(result.img_zarr_list[0][:])
+        assert np.any(out > 0)
+
+    # -- uint16 large image with splitting ------------------------------
+
+    def test_large_uint16_split_vs_no_split(self, tmp_path):
+        """Split output must match non-split for large uint16 images."""
+        input_dir = _make_large_zarr_img(
+            tmp_path, _LARGE_U16_H, _LARGE_U16_W, dtype=np.uint16
+        )
+        tf = Identity()
+        d = (200, 200)
+        chunk_size = (1100, 1100)
+
+        result_normal = warp_transform(
+            input_dir,
+            str(tmp_path / "output_normal"),
+            tf,
+            d=d,
+            chunk_size=chunk_size,
+            scale=(1.0, 1.0),
+        )
+        result_split = warp_transform(
+            input_dir,
+            str(tmp_path / "output_split"),
+            tf,
+            d=d,
+            chunk_size=chunk_size,
+            scale=(1.0, 1.0),
+            output_buffer_size_gb=0.003,
+        )
+        assert result_normal.img_zarr_list[0].dtype == np.uint16
+        assert result_split.img_zarr_list[0].dtype == np.uint16
+        out_normal = np.asarray(result_normal.img_zarr_list[0][:])
+        out_split = np.asarray(result_split.img_zarr_list[0][:])
+        assert out_normal.shape == out_split.shape
+        assert np.array_equal(out_normal, out_split)
+
+    # -- triangle mesh count for large images --------------------------
+
+    def test_large_triangle_mesh_count(self, tmp_path):
+        """Triangle mesh should have the correct count for a large image."""
+        ctx = _make_large_warp_context(tmp_path, _LARGE_H, _LARGE_W, d=(200, 200))
+        src_tri, dst_tri = _build_triangle_mesh(ctx, (0, _LARGE_H), (0, _LARGE_W))
+        nx = len(_build_grid_point(0, _LARGE_H, 200))
+        ny = len(_build_grid_point(0, _LARGE_W, 200))
+        expected = 2 * (nx - 1) * (ny - 1)
+        assert len(src_tri) == expected
+        assert len(dst_tri) == expected
+
+    # -- input not mutated ---------------------------------------------
+
+    def test_large_input_not_mutated(self, tmp_path):
+        """Input zarr should not be modified after warp transform."""
+        input_dir = _make_large_zarr_img(tmp_path, _LARGE_H, _LARGE_W)
+        tf = Affine(params=AffineParams(A=[[2.0, 0.0], [0.0, 2.0]], b=[0.0, 0.0]))
+        warp_transform(
+            input_dir,
+            str(tmp_path / "output"),
+            tf,
+            d=(200, 200),
+            chunk_size=(1100, 1100),
+            scale=(1.0, 1.0),
+            output_buffer_size_gb=0.002,
+        )
+        z_in = zarr.open(input_dir, mode="r")
+        for i, j in [(0, 0), (100, 200), (500, 500), (1099, 1099)]:
+            expected = (i * 10 + j * 5) % 256
+            assert z_in[i, j] == expected
+
+    # -- small d (more triangles) correctness ---------------------------
+
+    def test_large_split_with_small_d_correctness(self, tmp_path):
+        """Split output must match non-split with finer grid (d=100)."""
+        input_dir = _make_large_zarr_img(tmp_path, _LARGE_H, _LARGE_W)
+        tf = Identity()
+        d = (100, 100)
+        chunk_size = (1100, 1100)
+
+        result_normal = warp_transform(
+            input_dir,
+            str(tmp_path / "output_normal"),
+            tf,
+            d=d,
+            chunk_size=chunk_size,
+            scale=(1.0, 1.0),
+        )
+        result_split = warp_transform(
+            input_dir,
+            str(tmp_path / "output_split"),
+            tf,
+            d=d,
+            chunk_size=chunk_size,
+            scale=(1.0, 1.0),
+            output_buffer_size_gb=0.002,
+        )
+        out_normal = np.asarray(result_normal.img_zarr_list[0][:])
+        out_split = np.asarray(result_split.img_zarr_list[0][:])
+        assert out_normal.shape == out_split.shape
+        assert np.array_equal(out_normal, out_split)
+
+    # -- _warp_transform_chunk_impl with splitting ----------------------
+
+    def test_large_chunk_impl_with_split(self, tmp_path):
+        """_warp_transform_chunk_impl should split and produce output for large images."""
+        h, w = _LARGE_H, _LARGE_W
+        ctx = _make_large_warp_context(
+            tmp_path,
+            h,
+            w,
+            d=(200, 200),
+            output_buffer_size_gb=0.002,
+        )
+        output_dir = str(tmp_path / "output")
+        out_zarr = zarr.create_array(
+            store=output_dir,
+            shape=(ctx.H_dst, ctx.W_dst),
+            chunks=(512, 512),
+            dtype=np.uint8,
+            fill_value=0,
+            overwrite=True,
+        )
+        ctx.list_img_zarr_output = [out_zarr]
+        from spatialx_transform.warp import _warp_transform_chunk_impl
+
+        _warp_transform_chunk_impl(ctx, (0, h), (0, w))
+        out = np.asarray(out_zarr[:])
+        assert np.any(out > 0)

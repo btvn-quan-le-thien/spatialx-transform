@@ -25,6 +25,16 @@ from .params import (
 )
 
 from .warp import warp_transform
+from .exception import (
+    WarpError,
+    OpenZarrError,
+    CreateOutputError,
+    InvalidImageDimensionError,
+    BuildChunkSegmentError,
+    InvalidTransformError,
+    ChunkProcessingError,
+    DegenerateTriangleError,
+)
 
 __all__ = [
     "__version__",
@@ -42,6 +52,14 @@ __all__ = [
     "ComposedParams",
     "TPSParams",
     "warp_transform",
+    "WarpError",
+    "OpenZarrError",
+    "CreateOutputError",
+    "InvalidImageDimensionError",
+    "BuildChunkSegmentError",
+    "InvalidTransformError",
+    "ChunkProcessingError",
+    "DegenerateTriangleError",
 ]
 
 

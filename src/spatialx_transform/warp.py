@@ -11,6 +11,13 @@ import numpy as np
 
 from spatialx_transform.point import Point
 from spatialx_transform.transforms import Transformation
+from spatialx_transform.exception import (
+    OpenZarrError,
+    CreateOutputError,
+    InvalidImageDimensionError,
+    BuildChunkSegmentError,
+    DegenerateTriangleError,
+)
 
 from pathlib import Path
 
@@ -84,6 +91,13 @@ def _build_chunk_segment(
     chunk edges have complete source data.
     """
     chunk = []
+    if L_range > R_range or c_size <= 0:
+        raise BuildChunkSegmentError(
+            f"Invalid chunk segment params: L_range={L_range}, R_range={R_range}, c_size={c_size}",
+            L_range=L_range,
+            R_range=R_range,
+            c_size=c_size,
+        )
     for i in range(L_range, R_range, c_size):
         L = i
         R = min(R_range, i + c_size)
@@ -505,8 +519,11 @@ def _warp_single_triangle(
         ]
         idx = mask_roi > 0
         roi[idx] = warped_roi[idx]
-    except cv.error:
-        logger.debug(f"Skipping degenerate triangle {i}")
+    except cv.error as e:
+        raise DegenerateTriangleError(
+            f"Triangle {i} is degenerate: {e}",
+            triangle_index=i,
+        ) from e
 
 
 def _warp_channels(
@@ -548,18 +565,22 @@ def _warp_channels(
 
         logger.info(f"Channel {channel}: warping {len(srcTriangle)} triangles")
         for i in range(len(srcTriangle)):
-            _warp_single_triangle(
-                ctx=ctx,
-                src_img=src_img,
-                dst_img=dst_img,
-                srcTriangle=srcTriangle,
-                dstTriangle=dstTriangle,
-                range_row=range_row,
-                range_col=range_col,
-                i=i,
-                minX=minX,
-                minY=minY,
-            )
+            try:
+                _warp_single_triangle(
+                    ctx=ctx,
+                    src_img=src_img,
+                    dst_img=dst_img,
+                    srcTriangle=srcTriangle,
+                    dstTriangle=dstTriangle,
+                    range_row=range_row,
+                    range_col=range_col,
+                    i=i,
+                    minX=minX,
+                    minY=minY,
+                )
+            except DegenerateTriangleError as e:
+                logger.debug(f"Skipping degenerate triangle: {e}")
+                continue
 
         logger.info(f"Channel {channel}: storing dst_img to zarr and cleaning up")
         del src_img
@@ -717,18 +738,24 @@ def _warp_transform_impl(
     else:
         logger.info("========== START WARP TRANSFORM PHASE ==========")
 
-    if is2D:
-        num_channel = 1
-        H_src = img_zarr.shape[0]
-        W_src = img_zarr.shape[1]
-    else:
-        num_channel = img_zarr.shape[0]
-        H_src = img_zarr.shape[1]
-        W_src = img_zarr.shape[2]
-    img_dtype = img_zarr.dtype
-    logger.info(
-        f"Input: channels={num_channel}, H_src={H_src}, W_src={W_src}, d={d}, scale={scale}, is2D={is2D}"
-    )
+    try:
+        if is2D:
+            num_channel = 1
+            H_src = img_zarr.shape[0]
+            W_src = img_zarr.shape[1]
+        else:
+            num_channel = img_zarr.shape[0]
+            H_src = img_zarr.shape[1]
+            W_src = img_zarr.shape[2]
+        img_dtype = img_zarr.dtype
+        logger.info(
+            f"Input: channels={num_channel}, H_src={H_src}, W_src={W_src}, d={d}, scale={scale}, is2D={is2D}"
+        )
+    except Exception as e:
+        raise InvalidImageDimensionError(
+            f"Failed to extract image dimensions: {e}",
+            shape=img_zarr.shape,
+        ) from e
 
     H_dst, W_dst, offsetX, offsetY = _compute_bbox(
         img_shape=(H_src, W_src), tf=tf, d=d, scale=scale
@@ -758,28 +785,33 @@ def _warp_transform_impl(
     logger.info(
         f"Creating {num_channel} output zarr arrays (chunks=(512,512), dtype={img_dtype})"
     )
-    # create zarr output
-    list_img_zarr_output = []
-    for channel in range(num_channel):
-        # spawn zarr output
-        zarr_path = (
-            str(Path(output_dir) / f"img_output_channel{channel}.zarr")
-            if not is2D
-            else str(Path(output_dir) / "img_output.zarr")
-        )
+    try:
+        # create zarr output
+        list_img_zarr_output = []
+        for channel in range(num_channel):
+            # spawn zarr output
+            zarr_path = (
+                str(Path(output_dir) / f"img_output_channel{channel}.zarr")
+                if not is2D
+                else str(Path(output_dir) / "img_output.zarr")
+            )
 
-        img_zarr_ch = zarr.create_array(
-            store=zarr_path,
-            shape=(H_dst, W_dst),
-            chunks=(512, 512),
-            dtype=img_dtype,
-            fill_value=0,
-            overwrite=True,
-        )
+            img_zarr_ch = zarr.create_array(
+                store=zarr_path,
+                shape=(H_dst, W_dst),
+                chunks=(512, 512),
+                dtype=img_dtype,
+                fill_value=0,
+                overwrite=True,
+            )
 
-        list_img_zarr_output.append(img_zarr_ch)
+            list_img_zarr_output.append(img_zarr_ch)
 
-    ctx.list_img_zarr_output = list_img_zarr_output
+        ctx.list_img_zarr_output = list_img_zarr_output
+    except Exception as e:
+        raise CreateOutputError(
+            f"Failed to create output zarr at {output_dir}: {e}"
+        ) from e
 
     logger.info(f"Building chunk segments: chunk_size={chunk_size}")
     chunk_X = _build_chunk_segment(L_range=0, R_range=H_src, c_size=chunk_size[0])
@@ -854,7 +886,10 @@ def warp_transform(
     producing output files.
     """
 
-    img = zarr.open(input_dir, mode="r")
+    try:
+        img = zarr.open(input_dir, mode="r")
+    except Exception as e:
+        raise OpenZarrError(f"Cannot open zarr at {input_dir}: {e}") from e
     is2D = len(img.shape) == 2
 
     if preflight:
