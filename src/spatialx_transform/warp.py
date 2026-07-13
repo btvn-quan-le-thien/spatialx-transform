@@ -289,7 +289,7 @@ def _warp_estimated_RAM(
         trans_point_bytes + triangle_bytes + src_img_bytes + dst_img_bytes + temp_bytes
     )
 
-    return total_bytes / (1024**3), dst_img_bytes / (1024**3)
+    return total_bytes / 1e9, dst_img_bytes / 1e9
 
 
 def _split_chunk_to_transform(
